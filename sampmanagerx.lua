@@ -1,7 +1,7 @@
 local MIGRATION = "14.07.2026"
 script_author("melvin-costra")
 script_name("SA-MP Manager X")
-script_version("1.1.0")
+script_version("1.1.1")
 script_url("https://github.com/melvin-costra/sampmanagerx")
 
 ------------------------------------ Libs  ------------------------------------
@@ -30,6 +30,7 @@ local function wrapToGame(fnName)
 end
 wrapToGame("sampAddChatMessage")
 wrapToGame("sampSendChat")
+wrapToGame("sampProcessChatInput")
 
 ------------------------------------ Variables  ------------------------------------
 local CONFIG_PATH = "moonloader/config/sampmanagerx/_base.json"
