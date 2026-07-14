@@ -1,7 +1,7 @@
-local MIGRATION = "26.06.2026"
+local MIGRATION = "14.07.2026"
 script_author("melvin-costra")
 script_name("SA-MP Manager X")
-script_version("1.0.0")
+script_version("1.1.0")
 script_url("https://github.com/melvin-costra/sampmanagerx")
 
 ------------------------------------ Libs  ------------------------------------
@@ -11,6 +11,7 @@ local faicons = require('fAwesome6')
 local ffi = require("ffi")
 local encoding = require 'encoding'
 local ws = require("websocketsamp")
+local ASState = require("moonloader").audiostream_state
 encoding.default = 'CP1251'
 u8 = encoding.UTF8
 
@@ -32,7 +33,7 @@ wrapToGame("sampSendChat")
 
 ------------------------------------ Variables  ------------------------------------
 local CONFIG_PATH = "moonloader/config/sampmanagerx/_base.json"
-local API_URL = "wss://api.sampmanagerx.pp.ua/ws"
+local API_URL = "wss://sampmanagerx.dpdns.org/ws"
 local DIALOG_SEPARATOR = string.char(31)
 local BODY_PARTS = {
   [3] = "туловище",
@@ -475,6 +476,12 @@ local STREETS = {
 }
 local renderWindow, new = imgui.new.bool(false), imgui.new
 local runtimePatterns = {}
+local runtimeEndPatterns = {}
+local collectingItem = nil
+local collectedLines = {}
+local MAX_COLLECTED_LINES = 10
+local notificationSound = nil
+local NOTIFICATION_SOUND_PATH = getWorkingDirectory() .. '\\resource\\audio\\icq.mp3'
 
 local OutcomingMessageType = {
   TEXT = "TEXT",
@@ -487,6 +494,13 @@ local IncomingMessageType = {
   COMMAND = "COMMAND",
   SYSTEM = "SYSTEM",
   DIALOG = "DIALOG",
+  PONG = "PONG",
+  DISCONNECT = "DISCONNECT",
+}
+
+local DisconnectActionType = {
+  AFK = 0,
+  EXIT_GAME = 1,
 }
 
 local ui = {
@@ -517,389 +531,504 @@ local initialCfg = {
   migration = MIGRATION,
   settings = {
     connectionKey = "",
-    sendMessages = true,
-    sendAllMessages = false,
-    sendEvents = true,
-    sendAllEvents = false,
-    sendDialogs = true,
-    sendAllDialogs = false,
-    sendMessageNotifications = true,
-    sendEventNotifications = true,
-    sendDialogNotifications = true,
+    autoConnect = false,
+    systemMessages = true,
+    autoReconnect = true,
+    soundNotification = false,
+    soundVolume = 0.8,
+    forwardResponseTime = 3,
+    disconnectAction = false,
+    disconnectActionType = 0,
   },
   dialogs = {
-    {
-      style = 0,
-      description = "Сообщение (MSGBOX)",
-      is_enabled = true,
-      notification = true,
+    options = {
+      enabled = true,
+      sendAll = false,
+      notifications = true,
     },
-    {
-      style = 1,
-      description = "Ввод текста (INPUT)",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      style = 2,
-      description = "Список (LIST)",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      style = 3,
-      description = "Пароль (PASSWORD)",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      style = 4,
-      description = "Таблица (TABLIST)",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      style = 5,
-      description = "Таблица с заголовками (TABLIST_HEADERS)",
-      is_enabled = true,
-      notification = true,
+    items = {
+      {
+        style = 0,
+        description = "Сообщение (MSGBOX)",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        style = 1,
+        description = "Ввод текста (INPUT)",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        style = 2,
+        description = "Список (LIST)",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        style = 3,
+        description = "Пароль (PASSWORD)",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        style = 4,
+        description = "Таблица (TABLIST)",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        style = 5,
+        description = "Таблица с заголовками (TABLIST_HEADERS)",
+        is_enabled = true,
+        notification = true,
+      },
     },
   },
   events = {
-    damage = {
-      tag = "УРОН",
-      description = "Нанесение или получение урона",
-      is_enabled = true,
-      notification = true,
+    options = {
+      enabled = true,
+      sendAll = false,
+      notifications = true,
     },
-    death = {
-      tag = "СМЕРТЬ",
-      description = "Смерть игрока",
-      is_enabled = true,
-      notification = true,
-    },
-    server_disconnect = {
-      tag = "СЕРВЕР",
-      description = "Соединение с сервером потеряно",
-      is_enabled = true,
-      notification = true,
-    },
-    coordinates = {
-      tag = "КООРД",
-      description = "Изменение координат игрока",
-      is_enabled = false,
-      notification = false,
-    },
-    control = {
-      tag = "ФРИЗ",
-      description = "Заморозка / разморозка администратором",
-      is_enabled = true,
-      notification = true,
-    },
-    teleport = {
-      tag = "ТЕЛЕПОРТ",
-      description = "Телепортация игрока",
-      is_enabled = true,
-      notification = true,
-    },
-    wanted_level = {
-      tag = "РОЗЫСК",
-      description = "Изменение уровня розыска",
-      is_enabled = true,
-      notification = true,
-    },
-    money = {
-      tag = "ВИРТЫ",
-      description = "Изменение количества денег",
-      is_enabled = true,
-      notification = true,
-    },
-    health = {
-      tag = "ХП",
-      description = "Изменение здоровья игрока",
-      is_enabled = true,
-      notification = true,
+    items = {
+      damage = {
+        tag = "УРОН",
+        description = "Нанесение или получение урона",
+        is_enabled = true,
+        notification = true,
+      },
+      death = {
+        tag = "СМЕРТЬ",
+        description = "Смерть игрока",
+        is_enabled = true,
+        notification = true,
+      },
+      server_disconnect = {
+        tag = "СЕРВЕР",
+        description = "Соединение с сервером потеряно",
+        is_enabled = true,
+        notification = true,
+      },
+      coordinates = {
+        tag = "КООРД",
+        description = "Изменение координат игрока",
+        is_enabled = false,
+        notification = false,
+      },
+      stream = {
+        tag = "СТРИМ",
+        description = "Появление / исчезновение игрока в зоне стрима",
+        is_enabled = false,
+        notification = false,
+      },
+      control = {
+        tag = "ФРИЗ",
+        description = "Заморозка / разморозка администратором",
+        is_enabled = true,
+        notification = true,
+      },
+      teleport = {
+        tag = "ТЕЛЕПОРТ",
+        description = "Телепортация игрока",
+        is_enabled = true,
+        notification = true,
+      },
+      wanted_level = {
+        tag = "РОЗЫСК",
+        description = "Изменение уровня розыска",
+        is_enabled = true,
+        notification = true,
+      },
+      money = {
+        tag = "ВИРТЫ",
+        description = "Изменение количества денег",
+        is_enabled = true,
+        notification = true,
+      },
+      health = {
+        tag = "ХП",
+        description = "Изменение здоровья игрока",
+        is_enabled = true,
+        notification = true,
+      },
     },
   },
   messages = {
-    {
-      id = "fac87dae-01c0-4ce4-a002-47444b01cf06",
-      tag = "АДМИН",
-      description = "Сообщение от админа",
-      hex_color = "d97700ff",
-      pattern = "^ Ответ от .+%[%d+%]:",
-      is_enabled = true,
-      notification = true,
+    options = {
+      enabled = true,
+      sendAll = false,
+      notifications = true,
     },
-    {
-      id = "6ebccdc4-0026-4f81-b3f8-a060c166ecde",
-      tag = "АДМИН",
-      description = "Тебя телепортировал админ",
-      hex_color = "ffffffff",
-      pattern = "^ Вас телепортировал к себе администратор Samp%-Rp",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "a30d7d35-b0d1-41f2-ac73-66c92635e666",
-      tag = "АДМИН",
-      description = "Тебя кикнули",
-      hex_color = "ff6347ff",
-      pattern = "^ Администратор .+ кикнул {NICK}",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "95d54d68-4200-4ad4-8810-f8e8aff30e33",
-      tag = "АДМИН",
-      description = "Тебя заварнили",
-      hex_color = "ff6347ff",
-      pattern = "^ Администратор: .+ выдал warn {NICK}",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "2e753240-abd9-42bf-b3a6-8ce6844e60bb",
-      tag = "АДМИН",
-      description = "Тебя забанили",
-      hex_color = "ff6347ff",
-      pattern = "^ Администратор: .+ забанил {NICK}",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "cdfbb7f2-5890-41ed-9bac-03a608b6da5a",
-      tag = "АДМИН",
-      description = "Тебя посадили в деморган",
-      hex_color = "ff6347ff",
-      pattern = "^ Администратор: .+ посадил в ДеМорган {NICK}",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "31076dfd-73d4-4a64-ad81-4f62d9998b21",
-      tag = "АДМИН",
-      description = "Тебе дали поджопник",
-      hex_color = "ff6347ff",
-      pattern = "^ Администратор: .+ дал поджопник {NICK}",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "af7e4cbe-ab08-4bb1-bc3f-6f74e7753b7c",
-      tag = "САППОРТ",
-      description = "Сообщение от саппорта",
-      hex_color = "ffc801ff",
-      pattern = "^<%-Ответ .+%[%d+%]:",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "0cc4c3b8-eca8-4268-857c-24eee8d23dba",
-      tag = "O",
-      description = "Общий чат (/o)",
-      hex_color = "e0ffffaa",
-      pattern = "^ << .+%[%d+%]: .+ >>",
-      is_enabled = false,
-      notification = false,
-    },
-    {
-      id = "01b2a96c-7dc1-4e5f-9a24-ba7d82494466",
-      tag = "T",
-      description = "РП чат",
-      hex_color = "",
-      pattern = "^%- [a-zA-Z0-9_]+%[%d+%]: .+",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "57d6576b-b6d1-4618-89a6-d8d2e6be8d34",
-      tag = "B",
-      description = "НонРП чат (/b)",
-      hex_color = "",
-      pattern = "^ [a-zA-Z0-9_]+: %(%( .+ %)%)",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "d3a93808-7b02-406a-8bb0-71fca94e43d1",
-      tag = "S",
-      description = "Крик",
-      hex_color = "",
-      pattern = "^ [a-zA-Z0-9_]+ крикнул.-: .+",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "aee12875-2394-4b7a-bd31-47ca1b9fc2dc",
-      tag = "SMS IN",
-      description = "Входящее SMS",
-      hex_color = "ffff00ff",
-      pattern = "^ SMS: .+ Отправитель: .+%[%d+%]",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "8a683290-a50a-4461-9528-150fbf3352c5",
-      tag = "SMS OUT",
-      description = "Исходящее SMS",
-      hex_color = "ffff00ff",
-      pattern = "^ SMS: .+ Получатель: .+%[%d+%]",
-      is_enabled = true,
-      notification = false,
-    },
-    {
-      id = "7f7089dd-1d9f-4097-9759-90e6d04a82bd",
-      tag = "M",
-      description = "Мегафон",
-      hex_color = "ffff00ff",
-      pattern = "^ {{ .+ }}",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "e3d0c432-cc90-487b-b6c3-ce7f6899e696",
-      tag = "R",
-      description = "Рация",
-      hex_color = "8d8dffff",
-      pattern = "^ .+%[%d+%]: .+",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "5783f656-4973-4c87-82ed-f923604b7dd4",
-      tag = "DEP",
-      description = "Департамент",
-      hex_color = "ff8282ff",
-      pattern = "",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "d1ae09e2-932d-48c4-a79e-192fd4708106",
-      tag = "DO",
-      description = "РП действие /do",
-      hex_color = "c2a2daff",
-      pattern = "^{FFFFFF} %(%( .+%[%d+%] %)%) {FF8000}.+",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "ec5ec895-4934-4b42-a9e0-954c6d8f325f",
-      tag = "ME",
-      description = "РП действие /me или /todo",
-      hex_color = "c2a2daff",
-      pattern = "",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "b6268787-fbb5-4016-973a-f7495fb3ee60",
-      tag = "F",
-      description = "F чат банды / мафии",
-      hex_color = "01fcffff",
-      pattern = "",
-      is_enabled = false,
-      notification = false,
-    },
-    {
-      id = "f28c11a2-78f7-48eb-b21c-78d92e29acb7",
-      tag = "FS",
-      description = "Чат сквада",
-      hex_color = "ffee8aff",
-      pattern = "^ %[.+%] {FFFFFF}.+%[%d+%]: .+",
-      is_enabled = false,
-      notification = false,
-    },
-    {
-      id = "58c29a03-8862-491c-b2a0-3b11464640f6",
-      tag = "AD",
-      description = "Объявления (обычные)",
-      hex_color = "00d900ff",
-      pattern = "^ Объявление: .+ Прислал.-: .+ Тел: %d+",
-      is_enabled = false,
-      notification = false,
-    },
-    {
-      id = "a160bac9-1021-443a-ae6e-27fc1661aaa0",
-      tag = "AD",
-      description = "Объявления (VIP)",
-      hex_color = "ff8c37ff",
-      pattern = "^ VIP Объявление: .+ Прислал.-: .+ Тел: %d+",
-      is_enabled = false,
-      notification = false,
-    },
-    {
-      id = "a4916067-ee92-49a9-a5c2-40987f38a2d9",
-      tag = "GOV",
-      description = "Гос. новости",
-      hex_color = "2641feff",
-      pattern = "",
-      is_enabled = false,
-      notification = false,
-    },
-    {
-      id = "3ceba93e-19db-46b0-b4d8-81799c5f8e3f",
-      tag = "FISH",
-      description = "Сообщения о ловли рыбы / предметов",
-      hex_color = "6ab1ffff",
-      pattern = "^ %[Рыбалка%] {FFFFFF}Вы успешно поймали {6AB1FF}.+",
-      is_enabled = false,
-      notification = false,
-    },
-    {
-      id = "0c18fa7d-96bb-4a68-bef5-cc035463f4af",
-      tag = "FISH",
-      description = "Сломалась удочка",
-      hex_color = "6ab1ffff",
-      pattern = "^ %[Рыбалка%] {FFFFFF}У вас сломалась удочка",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "e89ee424-5992-412e-94b4-c6d1cddc0b75",
-      tag = "FISH",
-      description = "Сломалась снасть",
-      hex_color = "6ab1ffff",
-      pattern = "^ %[Рыбалка%] {FFFFFF}У вас сломалась снасть",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "5593191a-8cbc-44cc-ae37-48b1062ed2fb",
-      tag = "FISH",
-      description = "Сломалась наживка",
-      hex_color = "6ab1ffff",
-      pattern = "^ %[Рыбалка%] {FFFFFF}У вас сломалась наживка",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "62223ebd-f8c4-41da-94bf-005c666bbaa4",
-      tag = "FISH",
-      description = "Купон на бесплатный автомобиль [A] класса",
-      hex_color = "ff8c37ff",
-      pattern = "^ %[Купон%] {FFFFFF}Вам начислен купон {FF8C37}Купон на бесплатный автомобиль %[A%]",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "c03c63d5-7037-4f80-9624-37abfc585f60",
-      tag = "FISH",
-      description = "Купон на бесплатный автомобиль [B] класса",
-      hex_color = "ff8c37ff",
-      pattern = "^ %[Купон%] {FFFFFF}Вам начислен купон {FF8C37}Купон на бесплатный автомобиль %[B%]",
-      is_enabled = true,
-      notification = true,
-    },
-    {
-      id = "5f26bf59-5fe9-476e-87a9-11605617d165",
-      tag = "FISH",
-      description = "Купон на бесплатный скин",
-      hex_color = "ff8c37ff",
-      pattern = "^ %[Купон%] {FFFFFF}Вам начислен купон {FF8C37}Купон на бесплатный скин",
-      is_enabled = true,
-      notification = true,
+    items = {
+      {
+        id = "fac87dae-01c0-4ce4-a002-47444b01cf06",
+        tag = "АДМИН",
+        description = "Сообщение от админа",
+        hex_color = "d97700ff",
+        pattern = "^ Ответ от .+%[%d+%]:",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "6ebccdc4-0026-4f81-b3f8-a060c166ecde",
+        tag = "АДМИН",
+        description = "Тебя телепортировал админ",
+        hex_color = "ffffffff",
+        pattern = "^ Вас телепортировал к себе администратор Samp%-Rp",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "a30d7d35-b0d1-41f2-ac73-66c92635e666",
+        tag = "АДМИН",
+        description = "Тебя кикнули",
+        hex_color = "ff6347ff",
+        pattern = "^ Администратор .+ кикнул {NICK}",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "95d54d68-4200-4ad4-8810-f8e8aff30e33",
+        tag = "АДМИН",
+        description = "Тебя заварнили",
+        hex_color = "ff6347ff",
+        pattern = "^ Администратор: .+ выдал warn {NICK}",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "2e753240-abd9-42bf-b3a6-8ce6844e60bb",
+        tag = "АДМИН",
+        description = "Тебя забанили",
+        hex_color = "ff6347ff",
+        pattern = "^ Администратор: .+ забанил {NICK}",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "cdfbb7f2-5890-41ed-9bac-03a608b6da5a",
+        tag = "АДМИН",
+        description = "Тебя посадили в деморган",
+        hex_color = "ff6347ff",
+        pattern = "^ Администратор: .+ посадил в ДеМорган {NICK}",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "31076dfd-73d4-4a64-ad81-4f62d9998b21",
+        tag = "АДМИН",
+        description = "Тебе дали поджопник",
+        hex_color = "ff6347ff",
+        pattern = "^ Администратор: .+ дал поджопник {NICK}",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "af7e4cbe-ab08-4bb1-bc3f-6f74e7753b7c",
+        tag = "САППОРТ",
+        description = "Сообщение от саппорта",
+        hex_color = "ffc801ff",
+        pattern = "^<%-Ответ .+%[%d+%]:",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "e2a4c8d0-6b1f-4a3e-9c7d-5f8b2a1e0d3c",
+        description = "PAYDAY (зарплата)",
+        hex_color = "",
+        pattern = "^%-+===%[ .-КЛИЕНТ БАНКА SA %]===",
+        end_pattern = "^=+%[%d+:%d+%]=+",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "0cc4c3b8-eca8-4268-857c-24eee8d23dba",
+        tag = "O",
+        description = "Общий чат (/o)",
+        hex_color = "e0ffffaa",
+        pattern = "^ << .+%[%d+%]: .+ >>",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "01b2a96c-7dc1-4e5f-9a24-ba7d82494466",
+        tag = "T",
+        description = "РП чат",
+        hex_color = "",
+        pattern = "^%- [a-zA-Z0-9_]+%[%d+%]: .+",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "57d6576b-b6d1-4618-89a6-d8d2e6be8d34",
+        tag = "B",
+        description = "НонРП чат (/b)",
+        hex_color = "",
+        pattern = "^ [a-zA-Z0-9_]+: %(%( .+ %)%)",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "d3a93808-7b02-406a-8bb0-71fca94e43d1",
+        tag = "S",
+        description = "Крик",
+        hex_color = "",
+        pattern = "^ [a-zA-Z0-9_]+ крикнул.-: .+",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "aee12875-2394-4b7a-bd31-47ca1b9fc2dc",
+        tag = "SMS IN",
+        description = "Входящее SMS",
+        hex_color = "ffff00ff",
+        pattern = "^ SMS: .+ Отправитель: .+%[%d+%]",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "8a683290-a50a-4461-9528-150fbf3352c5",
+        tag = "SMS OUT",
+        description = "Исходящее SMS",
+        hex_color = "ffff00ff",
+        pattern = "^ SMS: .+ Получатель: .+%[%d+%]",
+        is_enabled = true,
+        notification = false,
+      },
+      {
+        id = "7f7089dd-1d9f-4097-9759-90e6d04a82bd",
+        tag = "M",
+        description = "Мегафон",
+        hex_color = "ffff00ff",
+        pattern = "^ {{ .+ }}",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "e3d0c432-cc90-487b-b6c3-ce7f6899e696",
+        tag = "R",
+        description = "Рация",
+        hex_color = "8d8dffff",
+        pattern = "^ .+%[%d+%]: .+",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "5783f656-4973-4c87-82ed-f923604b7dd4",
+        tag = "DEP",
+        description = "Департамент",
+        hex_color = "ff8282ff",
+        pattern = "",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "d1ae09e2-932d-48c4-a79e-192fd4708106",
+        tag = "DO",
+        description = "РП действие /do",
+        hex_color = "c2a2daff",
+        pattern = "^{FFFFFF} %(%( .+%[%d+%] %)%) {FF8000}.+",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "ec5ec895-4934-4b42-a9e0-954c6d8f325f",
+        tag = "ME",
+        description = "РП действие /me или /todo",
+        hex_color = "c2a2daff",
+        pattern = "",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "b6268787-fbb5-4016-973a-f7495fb3ee60",
+        tag = "F",
+        description = "F чат банды / мафии",
+        hex_color = "01fcffff",
+        pattern = "",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "f28c11a2-78f7-48eb-b21c-78d92e29acb7",
+        tag = "FS",
+        description = "Чат сквада",
+        hex_color = "ffee8aff",
+        pattern = "^ %[.+%] {FFFFFF}.+%[%d+%]: .+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "da4d386a-a727-4334-98b2-ec5510f58055",
+        description = "VIP чат",
+        hex_color = "",
+        pattern = "^ %[VP%] {FFFFFF}.+%[%d+%]: .+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "58c29a03-8862-491c-b2a0-3b11464640f6",
+        description = "Объявления (обычные)",
+        hex_color = "00d900ff",
+        pattern = "^ Объявление: .+ Прислал.-: .+ Тел: %d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "a160bac9-1021-443a-ae6e-27fc1661aaa0",
+        description = "Объявления (VIP)",
+        hex_color = "ff8c37ff",
+        pattern = "^ VIP Объявление: .+ Прислал.-: .+ Тел: %d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "a4916067-ee92-49a9-a5c2-40987f38a2d9",
+        tag = "GOV",
+        description = "Гос. новости",
+        hex_color = "2641feff",
+        pattern = "",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "3ceba93e-19db-46b0-b4d8-81799c5f8e3f",
+        description = "Сообщения о ловли рыбы / предметов",
+        hex_color = "6ab1ffff",
+        pattern = "^ %[Рыбалка%] {FFFFFF}Вы успешно поймали {6AB1FF}.+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "0c18fa7d-96bb-4a68-bef5-cc035463f4af",
+        description = "Сломалась удочка",
+        hex_color = "6ab1ffff",
+        pattern = "^ %[Рыбалка%] {FFFFFF}У вас сломалась удочка",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "e89ee424-5992-412e-94b4-c6d1cddc0b75",
+        description = "Сломалась снасть",
+        hex_color = "6ab1ffff",
+        pattern = "^ %[Рыбалка%] {FFFFFF}У вас сломалась снасть",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "5593191a-8cbc-44cc-ae37-48b1062ed2fb",
+        description = "Сломалась наживка",
+        hex_color = "6ab1ffff",
+        pattern = "^ %[Рыбалка%] {FFFFFF}У вас сломалась наживка",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "62223ebd-f8c4-41da-94bf-005c666bbaa4",
+        description = "Купон на бесплатный автомобиль [A] класса",
+        hex_color = "ff8c37ff",
+        pattern = "^ %[Купон%] {FFFFFF}Вам начислен купон {FF8C37}Купон на бесплатный автомобиль %[A%]",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "c03c63d5-7037-4f80-9624-37abfc585f60",
+        description = "Купон на бесплатный автомобиль [B] класса",
+        hex_color = "ff8c37ff",
+        pattern = "^ %[Купон%] {FFFFFF}Вам начислен купон {FF8C37}Купон на бесплатный автомобиль %[B%]",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "5f26bf59-5fe9-476e-87a9-11605617d165",
+        description = "Купон на бесплатный скин",
+        hex_color = "ff8c37ff",
+        pattern = "^ %[Купон%] {FFFFFF}Вам начислен купон {FF8C37}Купон на бесплатный скин",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "f0688313-9723-4aac-aa03-9b2f5cf16419",
+        tag = "ЛОМКА",
+        description = "Началась ломка",
+        hex_color = "",
+        pattern = "^ ~~~~~~~~ У вас началась ломка ~~~~~~~~",
+        is_enabled = true,
+        notification = true,
+      },
+      {
+        id = "cd560dcf-1efc-49d0-98d6-a7757ca8e043",
+        description = "Гонки",
+        hex_color = "",
+        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Гонки {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "117ed8cf-acd3-4923-a05c-44c7e7d1a9b0",
+        description = "Пейнтбол",
+        hex_color = "",
+        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Пейнтбол {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "26d4e518-9d50-42f9-b33e-93b81ce3bef5",
+        description = "Дерби",
+        hex_color = "",
+        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Дерби {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "e1f452ea-2df8-4570-ac7c-e069ce1e8b74",
+        description = "Copchase",
+        hex_color = "",
+        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Copchase {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "f3f9eee8-18c0-454c-b124-a5813bcd1d32",
+        description = "Gun Game",
+        hex_color = "",
+        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Gun Game {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "c4dbf033-90b7-4d59-8426-ffb3c6ce26b5",
+        description = "Игра в кальмара",
+        hex_color = "",
+        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Игра в кальмара {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "52f2796f-1dfb-4493-9608-b5fb05790300",
+        description = "Prophunt",
+        hex_color = "",
+        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Prophunt {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "fa03eb41-9597-4299-9f92-b3750ed7672d",
+        description = "Захват флага",
+        hex_color = "",
+        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Захват флага {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
+        is_enabled = false,
+        notification = false,
+      },
+      {
+        id = "208192f7-bd06-4284-8a34-d6dac16f972c",
+        description = "Mario Kart",
+        hex_color = "",
+        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Mario Kart {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
+        is_enabled = false,
+        notification = false,
+      },
     },
   },
 }
@@ -908,6 +1037,7 @@ local cfg = deepCopy(initialCfg)
 
 ---------------------------------- Functions  ---------------------------------
 local function printMessage(text)
+  if cfg.settings.systemMessages == false then return end
   sampAddChatMessage("{0D1F4D}[SMX] {FFFFFF}" .. tostring(text), -1)
 end
 
@@ -947,8 +1077,9 @@ local function buildPattern(pattern)
 end
 
 local function rebuildPatterns()
-  for _, msg in ipairs(cfg.messages) do
+  for _, msg in ipairs(cfg.messages.items) do
     runtimePatterns[msg.id] = buildPattern(msg.pattern)
+    runtimeEndPatterns[msg.id] = buildPattern(msg.end_pattern)
   end
 end
 
@@ -977,27 +1108,49 @@ local function matchesPattern(pattern, text)
 end
 
 local function handleChatMessage(color, text)
-  if not cfg.settings.sendMessages then return end
-  if cfg.settings.sendAllMessages then
+  if not cfg.messages.options.enabled then return end
+
+  if collectingItem then
+    table.insert(collectedLines, text)
+    if matchesPattern(runtimeEndPatterns[collectingItem.id], text) or #collectedLines >= MAX_COLLECTED_LINES then
+      local message = {
+        type = OutcomingMessageType.TEXT,
+        tag = collectingItem.tag,
+        text = table.concat(collectedLines, "\n"),
+        disable_notification = not (cfg.messages.options.notifications and collectingItem.notification),
+      }
+      collectingItem = nil
+      collectedLines = {}
+      return message
+    end
+    return
+  end
+
+  if cfg.messages.options.sendAll then
     return {
       type = OutcomingMessageType.TEXT,
       tag = "CHAT",
       text = text,
-      disable_notification = not cfg.settings.sendMessageNotifications
+      disable_notification = not cfg.messages.options.notifications
     }
   end
 
   local colorHex = string.lower(bit.tohex(color))
 
-  for _, msg in ipairs(cfg.messages) do
+  for _, msg in ipairs(cfg.messages.items) do
     if msg.is_enabled then
       if matchesColor(msg.hex_color, colorHex) then
         if matchesPattern(runtimePatterns[msg.id], text) then
+          if runtimeEndPatterns[msg.id] ~= "" then
+            collectingItem = msg
+            collectedLines = { text }
+            return
+          end
           return {
             type = OutcomingMessageType.TEXT,
             tag = msg.tag,
             text = text,
-            disable_notification = not (cfg.settings.sendMessageNotifications and msg.notification)
+            disable_notification = not (cfg.messages.options.notifications and msg.notification)
           }
         end
       end
@@ -1008,7 +1161,7 @@ local function handleChatMessage(color, text)
 end
 
 local function findDialogStyle(style)
-  for _, dialog in ipairs(cfg.dialogs) do
+  for _, dialog in ipairs(cfg.dialogs.items) do
     if dialog.style == style then
       return dialog
     end
@@ -1016,22 +1169,32 @@ local function findDialogStyle(style)
   return nil
 end
 
+local function playNotificationSound()
+  if not notificationSound or not cfg.settings.soundNotification then return end
+  setAudioStreamVolume(notificationSound, cfg.settings.soundVolume)
+  setAudioStreamState(notificationSound, ASState.STOP)
+  setAudioStreamState(notificationSound, ASState.PLAY)
+end
+
 local function sendTelegramMessage(msg)
+  if not msg.disable_notification then
+    playNotificationSound()
+  end
   ws.SendMessage(encodeJson(msg))
 end
 
 local function fireEvent(key, text)
-  if ws.GetConnectionStatus() ~= "OPEN" or not cfg.settings.sendEvents then return end
+  if ws.GetConnectionStatus() ~= "OPEN" or not cfg.events.options.enabled then return end
 
-  local event = cfg.events[key]
+  local event = cfg.events.items[key]
   if not event then return end
-  if not cfg.settings.sendAllEvents and not event.is_enabled then return end
+  if not cfg.events.options.sendAll and not event.is_enabled then return end
 
   sendTelegramMessage({
     type = OutcomingMessageType.TEXT,
     tag = event.tag,
     text = text,
-    disable_notification = not (cfg.settings.sendEventNotifications and event.notification),
+    disable_notification = not (cfg.events.options.notifications and event.notification),
   })
 end
 
@@ -1046,7 +1209,7 @@ local function calculateZone(x, y, z)
 end
 
 local function updatePlayerCoordinates(prevCoordsText)
-  if not (cfg.events.coordinates and cfg.events.coordinates.is_enabled) then
+  if not (cfg.events.items.coordinates and cfg.events.items.coordinates.is_enabled) then
     return prevCoordsText
   end
 
@@ -1063,7 +1226,7 @@ local function updatePlayerCoordinates(prevCoordsText)
 end
 
 local function updatePlayerHealth(prevHealth)
-  if not (cfg.events.health and cfg.events.health.is_enabled) then
+  if not (cfg.events.items.health and cfg.events.items.health.is_enabled) then
     return prevHealth
   end
 
@@ -1084,6 +1247,20 @@ local function updatePlayerHealth(prevHealth)
   return prevHealth
 end
 
+local WS_POLL_INTERVAL = 0.1
+local COORDS_INTERVAL = 1
+local HEALTH_INTERVAL = 1
+local RECONNECT_DELAY = 3
+local MAX_RECONNECT_ATTEMPTS = 3
+local CONNECT_TIMEOUT = 10
+
+local userWantsConnection = false
+local awaitingResult = false
+local reconnectAttempts = 0
+local reconnectAt = 0
+local connectingSince = 0
+local lastTelegramInputAt = 0
+
 local function connectToTelegram()
   local status = ws.GetConnectionStatus()
   if status == "OPEN" or status == "CONNECTING" then return end
@@ -1093,19 +1270,37 @@ local function connectToTelegram()
     return
   end
 
+  if not userWantsConnection then
+    reconnectAttempts = 0
+  end
+  userWantsConnection = true
+  awaitingResult = true
+  connectingSince = os.clock()
   ws.Connect(API_URL)
   printMessage("Подключение к телеграм боту...")
 end
 
 local function processIncomingMessage(message)
   local ok, data = pcall(decodeJson, message)
+  if ok and type(data) == "table" and data.type == IncomingMessageType.PONG then
+    return
+  end
+  if ok and type(data) == "table" and data.type == IncomingMessageType.DISCONNECT then
+    userWantsConnection = false
+    awaitingResult = false
+    reconnectAt = 0
+    if data.message ~= nil then printMessage(data.message) end
+    return
+  end
   if ok and type(data) == "table" and data.type ~= nil and data.message ~= nil then
     local mtype = data.type
     local text = data.message
     if mtype == IncomingMessageType.TEXT then
+      lastTelegramInputAt = os.clock()
       sampSendChat(text)
     elseif mtype == IncomingMessageType.COMMAND then
-      sampSendChat("/" .. text)
+      lastTelegramInputAt = os.clock()
+      sampProcessChatInput("/" .. text)
     elseif mtype == IncomingMessageType.SYSTEM then
       printMessage(text)
     elseif mtype == IncomingMessageType.DIALOG then
@@ -1136,12 +1331,95 @@ local function drainIncomingMessages()
 end
 
 local function disconnectFromTelegram()
-  if ws.GetConnectionStatus() ~= "OPEN" then
-    printMessage("Соединение не активно")
+  userWantsConnection = false
+  awaitingResult = false
+  reconnectAt = 0
+  reconnectAttempts = 0
+
+  local status = ws.GetConnectionStatus()
+  if status == "OPEN" or status == "CONNECTING" then
+    ws.Disconnect()
+  end
+  printMessage("Отключено от телеграм бота")
+end
+
+local function performDisconnectAction()
+  if not cfg.settings.disconnectAction then return end
+
+  if cfg.settings.disconnectActionType == DisconnectActionType.AFK then
+    printMessage("Уходим в АФК...")
+    if not isPauseMenuActive() then
+      lua_thread.create(function()
+        setVirtualKeyDown(0x1B, true)
+        wait(100)
+        setVirtualKeyDown(0x1B, false)
+      end)
+    end
+  elseif cfg.settings.disconnectActionType == DisconnectActionType.EXIT_GAME then
+    printMessage("Выходим из игры...")
+    ws.Disconnect()
+    sampProcessChatInput("/q")
+  end
+end
+
+local function scheduleReconnect(now, reason)
+  if cfg.settings.autoReconnect == false then
+    userWantsConnection = false
+    reconnectAt = 0
+    printMessage(reason .. ". Переподключение отключено в настройках.")
+    performDisconnectAction()
     return
   end
+  if reconnectAttempts < MAX_RECONNECT_ATTEMPTS then
+    reconnectAttempts = reconnectAttempts + 1
+    reconnectAt = now + RECONNECT_DELAY
+    printMessage(reason .. ". Переподключение через " .. RECONNECT_DELAY .. " с... (" .. reconnectAttempts .. "/" .. MAX_RECONNECT_ATTEMPTS .. ")")
+  else
+    userWantsConnection = false
+    reconnectAt = 0
+    printMessage("Не удалось переподключиться после " .. MAX_RECONNECT_ATTEMPTS .. " попыток. Попробуй позже.")
+    performDisconnectAction()
+  end
+end
 
-  ws.Disconnect()
+local function updateConnection(now)
+  local status = ws.GetConnectionStatus()
+
+  if not userWantsConnection then
+    return
+  elseif awaitingResult then
+    if status == "OPEN" then
+      awaitingResult = false
+      reconnectAttempts = 0
+      reconnectAt = 0
+      printMessage("Соединение установлено")
+      ws.SendMessage(encodeJson({ key = cfg.settings.connectionKey, username = MyNickName }))
+    elseif status == "CLOSED" then
+      awaitingResult = false
+      drainIncomingMessages()
+      if not userWantsConnection then
+        return
+      end
+      scheduleReconnect(now, "Не удалось подключиться")
+    elseif now - connectingSince >= CONNECT_TIMEOUT then
+      awaitingResult = false
+      ws.Disconnect()
+      scheduleReconnect(now, "Не удалось подключиться")
+    end
+  elseif reconnectAt > 0 then
+    if now >= reconnectAt then
+      reconnectAt = 0
+      connectToTelegram()
+    end
+  elseif status == "OPEN" then
+    drainIncomingMessages()
+  elseif status == "CLOSED" then
+    drainIncomingMessages()
+    if not userWantsConnection then
+      return
+    end
+    scheduleReconnect(now, "Соединение разорвано")
+  end
 end
 
 ------------------------------------ Imgui  ------------------------------------
@@ -1359,21 +1637,26 @@ imgui.OnFrame(
 
       imgui.Separator()
 
-      local connectButtonText = status ~= "OPEN" and "Подключиться" or "Отключиться"
-      local connectButtonAction = status ~= "OPEN" and connectToTelegram or disconnectFromTelegram
+      local connectButtonText = userWantsConnection and "Отключиться" or "Подключиться"
+      local connectButtonAction = userWantsConnection and disconnectFromTelegram or connectToTelegram
       local actionButtonSize = imgui.ImVec2(220, 40)
 
-      imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionButtonSize.x) / 2, 150))
+      imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionButtonSize.x) / 2, 130))
       if imgui.Button(connectButtonText, actionButtonSize) then
         connectButtonAction()
       end
 
-      imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionButtonSize.x) / 2, 210))
+      imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionButtonSize.x) / 2, 190))
+      if imgui.Button("Телеграм бот", actionButtonSize) then
+        os.execute('explorer "https://t.me/sampmanagerx_bot"')
+      end
+
+      imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionButtonSize.x) / 2, 250))
       if imgui.Button("Телеграм канал", actionButtonSize) then
         os.execute('explorer "https://t.me/melvin_costra"')
       end
 
-      imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionButtonSize.x) / 2, 270))
+      imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionButtonSize.x) / 2, 310))
       if imgui.Button("Связь с разработчиком", actionButtonSize) then
         os.execute('explorer "https://t.me/vovka8101"')
       end
@@ -1402,7 +1685,7 @@ imgui.OnFrame(
       imgui.SameLine(imgui.GetWindowWidth() - resetW - imgui.GetStyle().WindowPadding.x)
       if imgui.Button("Сброс##messages") then
         showConfirm("Сброс сообщений", "Вернуть настройки сообщений к исходным?", function()
-          cfg.messages = deepCopy(initialCfg.messages)
+          cfg.messages.items = deepCopy(initialCfg.messages.items)
           saveCFG(cfg, CONFIG_PATH)
           rebuildPatterns()
         end)
@@ -1410,35 +1693,35 @@ imgui.OnFrame(
 
       imgui.Spacing()
 
-      local sendMessages = ffi.new("bool[1]", cfg.settings.sendMessages)
+      local sendMessages = ffi.new("bool[1]", cfg.messages.options.enabled)
       if imgui.Checkbox("Отправлять сообщения", sendMessages) then
-        cfg.settings.sendMessages = sendMessages[0]
+        cfg.messages.options.enabled = sendMessages[0]
         saveCFG(cfg, CONFIG_PATH)
       end
 
       imgui.SameLine()
-      local sendAll = ffi.new("bool[1]", cfg.settings.sendAllMessages)
+      local sendAll = ffi.new("bool[1]", cfg.messages.options.sendAll)
       if imgui.Checkbox("Отправлять все сообщения", sendAll) then
-        cfg.settings.sendAllMessages = sendAll[0]
+        cfg.messages.options.sendAll = sendAll[0]
         saveCFG(cfg, CONFIG_PATH)
       end
 
       local notifyW = imgui.GetFrameHeight() + imgui.GetStyle().ItemInnerSpacing.x + imgui.CalcTextSize("Уведомления").x
       imgui.SameLine(imgui.GetWindowWidth() - notifyW - imgui.GetStyle().WindowPadding.x)
-      local sendAllNotify = ffi.new("bool[1]", cfg.settings.sendMessageNotifications)
+      local sendAllNotify = ffi.new("bool[1]", cfg.messages.options.notifications)
       if imgui.Checkbox("Уведомления##sendAll", sendAllNotify) then
-        cfg.settings.sendMessageNotifications = sendAllNotify[0]
+        cfg.messages.options.notifications = sendAllNotify[0]
         saveCFG(cfg, CONFIG_PATH)
       end
 
       imgui.Spacing()
 
-      local messagesDisabled = not cfg.settings.sendMessages
+      local messagesDisabled = not cfg.messages.options.enabled
       if messagesDisabled then
         imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
       end
 
-      if (#cfg.messages > 0) and imgui.BeginChild("messagesList", imgui.ImVec2(-1, -1), true) then
+      if (#cfg.messages.items > 0) and imgui.BeginChild("messagesList", imgui.ImVec2(-1, -1), true) then
         local w = {
           tag = 80,
           desc = 332,
@@ -1458,11 +1741,11 @@ imgui.OnFrame(
         imgui.NextColumn()
 
         imgui.Columns(4)
-        for _, msg in ipairs(cfg.messages) do
+        for _, msg in ipairs(cfg.messages.items) do
           local searchQuery = ffi.string(ui.searchBuffer)
-          if searchQuery == "" or msg.tag:find(searchQuery, 1, true) or msg.description:find(searchQuery, 1, true) then
+          if searchQuery == "" or (msg.tag or ""):find(searchQuery, 1, true) or msg.description:find(searchQuery, 1, true) then
             imgui.Separator()
-            imgui.Text(msg.tag); imgui.SetColumnWidth(-1, w.tag)
+            imgui.Text(msg.tag or ""); imgui.SetColumnWidth(-1, w.tag)
             imgui.NextColumn()
 
             imgui.Text(msg.description); imgui.SetColumnWidth(-1, w.desc)
@@ -1521,42 +1804,42 @@ imgui.OnFrame(
       imgui.SameLine(imgui.GetWindowWidth() - resetW - imgui.GetStyle().WindowPadding.x)
       if imgui.Button("Сброс##events") then
         showConfirm("Сброс событий", "Вернуть настройки событий к исходным?", function()
-          cfg.events = deepCopy(initialCfg.events)
+          cfg.events.items = deepCopy(initialCfg.events.items)
           saveCFG(cfg, CONFIG_PATH)
         end)
       end
 
       imgui.Spacing()
 
-      local sendEvents = ffi.new("bool[1]", cfg.settings.sendEvents)
+      local sendEvents = ffi.new("bool[1]", cfg.events.options.enabled)
       if imgui.Checkbox("Отправлять события", sendEvents) then
-        cfg.settings.sendEvents = sendEvents[0]
+        cfg.events.options.enabled = sendEvents[0]
         saveCFG(cfg, CONFIG_PATH)
       end
 
       imgui.SameLine()
-      local sendAll = ffi.new("bool[1]", cfg.settings.sendAllEvents)
+      local sendAll = ffi.new("bool[1]", cfg.events.options.sendAll)
       if imgui.Checkbox("Отправлять все события", sendAll) then
-        cfg.settings.sendAllEvents = sendAll[0]
+        cfg.events.options.sendAll = sendAll[0]
         saveCFG(cfg, CONFIG_PATH)
       end
 
       local notifyW = imgui.GetFrameHeight() + imgui.GetStyle().ItemInnerSpacing.x + imgui.CalcTextSize("Уведомления").x
       imgui.SameLine(imgui.GetWindowWidth() - notifyW - imgui.GetStyle().WindowPadding.x)
-      local sendAllNotify = ffi.new("bool[1]", cfg.settings.sendEventNotifications)
+      local sendAllNotify = ffi.new("bool[1]", cfg.events.options.notifications)
       if imgui.Checkbox("Уведомления##sendAllEvents", sendAllNotify) then
-        cfg.settings.sendEventNotifications = sendAllNotify[0]
+        cfg.events.options.notifications = sendAllNotify[0]
         saveCFG(cfg, CONFIG_PATH)
       end
 
       imgui.Spacing()
 
-      local eventsDisabled = not cfg.settings.sendEvents
+      local eventsDisabled = not cfg.events.options.enabled
       if eventsDisabled then
         imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
       end
 
-      if next(cfg.events) and imgui.BeginChild("eventsList", imgui.ImVec2(-1, -1), true) then
+      if next(cfg.events.items) and imgui.BeginChild("eventsList", imgui.ImVec2(-1, -1), true) then
         local w = {
           tag = 80,
           desc = 332,
@@ -1576,7 +1859,7 @@ imgui.OnFrame(
         imgui.NextColumn()
 
         imgui.Columns(4)
-        for key, event in pairs(cfg.events) do
+        for key, event in pairs(cfg.events.items) do
           local searchQuery = ffi.string(ui.eventsSearchBuffer)
           if searchQuery == "" or event.tag:find(searchQuery, 1, true) or event.description:find(searchQuery, 1, true) then
             imgui.Separator()
@@ -1629,35 +1912,35 @@ imgui.OnFrame(
       imgui.Spacing()
       imgui.Spacing()
 
-      local sendDialogs = ffi.new("bool[1]", cfg.settings.sendDialogs)
+      local sendDialogs = ffi.new("bool[1]", cfg.dialogs.options.enabled)
       if imgui.Checkbox("Отправлять диалоги", sendDialogs) then
-        cfg.settings.sendDialogs = sendDialogs[0]
+        cfg.dialogs.options.enabled = sendDialogs[0]
         saveCFG(cfg, CONFIG_PATH)
       end
 
       imgui.SameLine()
-      local sendAll = ffi.new("bool[1]", cfg.settings.sendAllDialogs)
+      local sendAll = ffi.new("bool[1]", cfg.dialogs.options.sendAll)
       if imgui.Checkbox("Отправлять все диалоги", sendAll) then
-        cfg.settings.sendAllDialogs = sendAll[0]
+        cfg.dialogs.options.sendAll = sendAll[0]
         saveCFG(cfg, CONFIG_PATH)
       end
 
       local notifyW = imgui.GetFrameHeight() + imgui.GetStyle().ItemInnerSpacing.x + imgui.CalcTextSize("Уведомления").x
       imgui.SameLine(imgui.GetWindowWidth() - notifyW - imgui.GetStyle().WindowPadding.x)
-      local sendAllNotify = ffi.new("bool[1]", cfg.settings.sendDialogNotifications)
+      local sendAllNotify = ffi.new("bool[1]", cfg.dialogs.options.notifications)
       if imgui.Checkbox("Уведомления##sendAll", sendAllNotify) then
-        cfg.settings.sendDialogNotifications = sendAllNotify[0]
+        cfg.dialogs.options.notifications = sendAllNotify[0]
         saveCFG(cfg, CONFIG_PATH)
       end
 
       imgui.Spacing()
 
-      local dialogsDisabled = not cfg.settings.sendDialogs
+      local dialogsDisabled = not cfg.dialogs.options.enabled
       if dialogsDisabled then
         imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
       end
 
-      if (#cfg.dialogs > 0) and imgui.BeginChild("dialogsList", imgui.ImVec2(-1, -1), true) then
+      if (#cfg.dialogs.items > 0) and imgui.BeginChild("dialogsList", imgui.ImVec2(-1, -1), true) then
         local w = {
           style = 50,
           desc = 370,
@@ -1677,7 +1960,7 @@ imgui.OnFrame(
         imgui.NextColumn()
 
         imgui.Columns(4)
-        for _, dialog in ipairs(cfg.dialogs) do
+        for _, dialog in ipairs(cfg.dialogs.items) do
           imgui.Separator()
           imgui.Text(tostring(dialog.style)); imgui.SetColumnWidth(-1, w.style)
           imgui.NextColumn()
@@ -1714,6 +1997,108 @@ imgui.OnFrame(
       imgui.EndTabItem()
     end
 
+    if imgui.BeginTabItem("Настройки") then
+      imgui.Spacing()
+      imgui.Spacing()
+
+      local autoConnect = ffi.new("bool[1]", cfg.settings.autoConnect)
+      if imgui.Checkbox("Автоподключение при входе в игру", autoConnect) then
+        cfg.settings.autoConnect = autoConnect[0]
+        saveCFG(cfg, CONFIG_PATH)
+      end
+
+      imgui.Spacing()
+
+      local systemMessages = ffi.new("bool[1]", cfg.settings.systemMessages)
+      if imgui.Checkbox("Системные сообщения в чате", systemMessages) then
+        cfg.settings.systemMessages = systemMessages[0]
+        saveCFG(cfg, CONFIG_PATH)
+      end
+
+      imgui.Spacing()
+
+      local autoReconnect = ffi.new("bool[1]", cfg.settings.autoReconnect)
+      if imgui.Checkbox("Переподключение при потере соединения", autoReconnect) then
+        cfg.settings.autoReconnect = autoReconnect[0]
+        saveCFG(cfg, CONFIG_PATH)
+      end
+
+      imgui.Spacing()
+
+      local disconnectAction = ffi.new("bool[1]", cfg.settings.disconnectAction)
+      if imgui.Checkbox("Действие при потере соединения", disconnectAction) then
+        cfg.settings.disconnectAction = disconnectAction[0]
+        saveCFG(cfg, CONFIG_PATH)
+      end
+      if imgui.IsItemHovered() then
+        imgui.BeginTooltip()
+        imgui.PushTextWrapPos(300)
+        imgui.TextWrapped("Если соединение с ботом обрывается не по твоей инициативе, будет выполнено выбранное действие. При включённом переподключении - после всех неудачных попыток, иначе - сразу при потере соединения.")
+        imgui.PopTextWrapPos()
+        imgui.EndTooltip()
+      end
+
+      imgui.SameLine()
+      local disconnectActionType = ffi.new("int[1]", cfg.settings.disconnectActionType)
+      imgui.PushItemWidth(160)
+      if imgui.ComboStr("##disconnectActionType", disconnectActionType, "Выйти в АФК\0Выйти из игры (/q)\0", -1) then
+        cfg.settings.disconnectActionType = disconnectActionType[0]
+        saveCFG(cfg, CONFIG_PATH)
+      end
+      imgui.PopItemWidth()
+
+      imgui.Spacing()
+
+      local soundNotification = ffi.new("bool[1]", cfg.settings.soundNotification)
+      if imgui.Checkbox("Звуковое уведомление в игре", soundNotification) then
+        cfg.settings.soundNotification = soundNotification[0]
+        saveCFG(cfg, CONFIG_PATH)
+      end
+      if imgui.IsItemHovered() then
+        imgui.BeginTooltip()
+        imgui.PushTextWrapPos(300)
+        imgui.TextWrapped("Для работы этой функции в настройках игры должен быть включён звук радио. Если звук был выключен, после его включения нужно перезайти в игру.")
+        imgui.PopTextWrapPos()
+        imgui.EndTooltip()
+      end
+
+      local soundVolume = ffi.new("float[1]", cfg.settings.soundVolume)
+      imgui.PushItemWidth(200)
+      if imgui.SliderFloat("Громкость##soundVolume", soundVolume, 0.1, 1.0, "%.1f") then
+        cfg.settings.soundVolume = soundVolume[0]
+      end
+      if imgui.IsItemDeactivatedAfterEdit() then
+        saveCFG(cfg, CONFIG_PATH)
+      end
+      imgui.PopItemWidth()
+
+      imgui.SameLine()
+      if imgui.Button("Проверить звук") then
+        playNotificationSound()
+      end
+
+      imgui.Spacing()
+
+      local forwardResponseTime = ffi.new("int[1]", cfg.settings.forwardResponseTime)
+      imgui.PushItemWidth(200)
+      if imgui.SliderInt("Время ожидания ответа (сек)##forwardResponseTime", forwardResponseTime, 1, 5) then
+        cfg.settings.forwardResponseTime = forwardResponseTime[0]
+      end
+      if imgui.IsItemHovered() then
+        imgui.BeginTooltip()
+        imgui.PushTextWrapPos(300)
+        imgui.TextWrapped("Когда ты отправляешь сообщение или команду из телеграма, в течение этого времени все сообщения из игрового чата пересылаются в телеграм.")
+        imgui.PopTextWrapPos()
+        imgui.EndTooltip()
+      end
+      if imgui.IsItemDeactivatedAfterEdit() then
+        saveCFG(cfg, CONFIG_PATH)
+      end
+      imgui.PopItemWidth()
+
+      imgui.EndTabItem()
+    end
+
     imgui.EndTabBar()
 
     renderConfirmPopup()
@@ -1724,19 +2109,46 @@ imgui.OnFrame(
   end
 )
 
------------------------------------- Events  ------------------------------------
-function ev.onSendSpawn()
+local function initSession()
   updatePlayerVariables()
   rebuildPatterns()
+
+  if cfg.settings.connectionKey and cfg.settings.connectionKey ~= "" then
+    ffi.copy(ui.connectionKey, cfg.settings.connectionKey)
+  end
+
+  if cfg.settings.autoConnect and MyNickName and MyNickName ~= "" then
+    connectToTelegram()
+  end
+end
+
+------------------------------------ Events  ------------------------------------
+function ev.onSendSpawn()
+  local _, id = sampGetPlayerIdByCharHandle(PLAYER_PED)
+  local nick = sampGetPlayerNickname(id)
+  if id ~= MyID or nick ~= MyNickName then
+    initSession()
+  end
 end
 
 function ev.onServerMessage(c, text)
   if ws.GetConnectionStatus() ~= "OPEN" then return end
 
-  local message = handleChatMessage(c, u8(text))
+  local decoded = u8(text)
+  local message = handleChatMessage(c, decoded)
 
   if message then
+    if type(message.text) == "string" then
+      message.text = message.text:gsub("^[ \t]+", ""):gsub("\n[ \t]+", "\n")
+    end
     sendTelegramMessage(message)
+  elseif not collectingItem and (os.clock() - lastTelegramInputAt) < cfg.settings.forwardResponseTime then
+    sendTelegramMessage({
+      type = OutcomingMessageType.TEXT,
+      tag = "CHAT",
+      text = decoded:gsub("^[ \t]+", ""):gsub("\n[ \t]+", "\n"),
+      disable_notification = true,
+    })
   end
 end
 
@@ -1763,6 +2175,17 @@ function ev.onSendDeathNotification(reason, killerId)
   fireEvent("death", "Ты погиб")
 end
 
+function ev.onPlayerStreamIn(playerId, team, model, position, rotation, color, fightingStyle)
+  if not sampIsPlayerConnected(playerId) then return end
+  local nick = sampGetPlayerNickname(playerId)
+  fireEvent("stream", string.format("Появился %s[%d] | skin: %d", nick, playerId, model))
+end
+
+function ev.onPlayerStreamOut(playerId)
+  if not sampIsPlayerConnected(playerId) then return end
+  fireEvent("stream", string.format("Исчез %s[%d]", sampGetPlayerNickname(playerId), playerId))
+end
+
 function ev.onConnectionClosed()
   fireEvent("server_disconnect", "Сервер закрыл соединение")
 end
@@ -1777,7 +2200,7 @@ end
 
 function ev.onSetPlayerPos(position)
   local zone = calculateZone(position.x, position.y, position.z)
-  fireEvent("teleport", string.format("Телепорт: x: %.0f, y: %.0f, z: %.0f | %s", position.x, position.y, position.z, zone))
+  fireEvent("teleport", string.format("x: %.0f, y: %.0f, z: %.0f | %s", position.x, position.y, position.z, zone))
 end
 
 function ev.onSetPlayerWantedLevel(wantedLevel)
@@ -1794,12 +2217,12 @@ function ev.onGivePlayerMoney(money)
 end
 
 function ev.onShowDialog(dialogId, style, title, button1, button2, text)
-  if not cfg.settings.sendDialogs then return end
+  if not cfg.dialogs.options.enabled then return end
   if ws.GetConnectionStatus() ~= "OPEN" then return end
 
   local dialog = findDialogStyle(style)
   if not dialog then return end
-  if not cfg.settings.sendAllDialogs and not dialog.is_enabled then return end
+  if not cfg.dialogs.options.sendAll and not dialog.is_enabled then return end
 
   local payload = table.concat({
     dialogId,
@@ -1813,7 +2236,7 @@ function ev.onShowDialog(dialogId, style, title, button1, button2, text)
     type = OutcomingMessageType.DIALOG,
     tag = tostring(style),
     text = payload,
-    disable_notification = not (cfg.settings.sendDialogNotifications and dialog.notification),
+    disable_notification = not (cfg.dialogs.options.notifications and dialog.notification),
   })
 end
 
@@ -1828,95 +2251,84 @@ function ev.onSendDialogResponse(dialogId, button, listitem, input)
 end
 
 ------------------------------------ Main  ------------------------------------
+local function loadConfig()
+  if not doesDirectoryExist('moonloader/config') then createDirectory("moonloader/config") end
+  if not doesDirectoryExist('moonloader/config/sampmanagerx') then createDirectory("moonloader/config/sampmanagerx") end
+
+  if not doesFileExist(CONFIG_PATH) then
+    saveCFG(cfg, CONFIG_PATH)
+    return
+  end
+
+  local file = io.open(CONFIG_PATH, 'r')
+  if not file then return end
+  local rawData = file:read('*a')
+  file:close()
+
+  local ok, fileCFG = pcall(decodeJson, rawData)
+  if not ok then
+    printMessage("Конфиг повреждён, создаем новый")
+    fileCFG = nil
+  end
+
+  if fileCFG and fileCFG.migration == cfg.migration then
+    cfg = fileCFG
+  else
+    if fileCFG and fileCFG.settings then
+      cfg.settings.connectionKey = fileCFG.settings.connectionKey or cfg.settings.connectionKey
+    end
+    saveCFG(cfg, CONFIG_PATH)
+  end
+end
+
+local function registerCommands()
+  sampRegisterChatCommand("smx", function()
+    renderWindow[0] = not renderWindow[0]
+  end)
+end
+
+local function makeInterval(period)
+  local last = 0
+  return function(now)
+    if now - last < period then return false end
+    last = now
+    return true
+  end
+end
+
 function main()
 	if not isSampfuncsLoaded() or not isSampLoaded() then return end
 	while not isSampAvailable() do wait(100) end
-  if not doesDirectoryExist('moonloader/config') then createDirectory("moonloader/config") end
-  if not doesDirectoryExist('moonloader/config/sampmanagerx') then createDirectory("moonloader/config/sampmanagerx") end
-  if not doesFileExist(CONFIG_PATH) then
-    saveCFG(cfg, CONFIG_PATH)
+
+  loadConfig()
+  initSession()
+  registerCommands()
+
+  notificationSound = loadAudioStream(NOTIFICATION_SOUND_PATH)
+  if notificationSound then
+    setAudioStreamVolume(notificationSound, cfg.settings.soundVolume)
   else
-    local file = io.open(CONFIG_PATH, 'r')
-    if file then
-      local rawData = file:read('*a')
-      file:close()
-
-      local ok, fileCFG = pcall(decodeJson, rawData)
-      if not ok then
-        printMessage("Конфиг повреждён, создаем новый")
-        fileCFG = nil
-      end
-
-      if fileCFG and fileCFG.migration == cfg.migration then
-        cfg = fileCFG
-      else
-        if fileCFG and fileCFG.settings then
-          cfg.settings.connectionKey = fileCFG.settings.connectionKey or cfg.settings.connectionKey
-        end
-        saveCFG(cfg, CONFIG_PATH)
-      end
-    end
+    printMessage("Не удалось загрузить звук уведомления")
   end
 
-  updatePlayerVariables()
-  rebuildPatterns()
+  local wsTick = makeInterval(WS_POLL_INTERVAL)
+  local coordsTick = makeInterval(COORDS_INTERVAL)
+  local healthTick = makeInterval(HEALTH_INTERVAL)
 
-  if cfg.settings.connectionKey and cfg.settings.connectionKey ~= "" then
-    ffi.copy(ui.connectionKey, cfg.settings.connectionKey)
-  end
-
-	sampRegisterChatCommand("smx", function()
-    renderWindow[0] = not renderWindow[0]
-  end)
-
-  local WS_POLL_INTERVAL = 0.1
-  local COORDS_INTERVAL = 1
-  local HEALTH_INTERVAL = 1
-
-  local prevStatus = "CLOSED"
-  local prevCoordsText = nil
-  local prevHealth = nil
-
-  local lastWsPoll = 0
-  local lastCoordsUpdate = 0
-  local lastHealthUpdate = 0
+  local prevCoordsText, prevHealth = nil, nil
 
 	while true do
 		wait(0)
     local now = os.clock()
 
-    if now - lastWsPoll >= WS_POLL_INTERVAL then
-      lastWsPoll = now
+    if wsTick(now) then updateConnection(now) end
 
-      local status = ws.GetConnectionStatus()
-      if status ~= prevStatus then
-        if status == "OPEN" then
-          printMessage("Соединение установлено")
-          ws.SendMessage(encodeJson({ key = cfg.settings.connectionKey, username = MyNickName }))
-        elseif status == "CLOSED" then
-          drainIncomingMessages()
-          printMessage(prevStatus == "CONNECTING" and "Не удалось подключиться к телеграм боту" or "Соединение разорвано")
-        end
-        prevStatus = status
-      end
-
-      if status == "OPEN" then
-        drainIncomingMessages()
-      end
+    if coordsTick(now) and ws.GetConnectionStatus() == "OPEN" then
+      prevCoordsText = updatePlayerCoordinates(prevCoordsText)
     end
 
-    if now - lastCoordsUpdate >= COORDS_INTERVAL then
-      lastCoordsUpdate = now
-      if ws.GetConnectionStatus() == "OPEN" then
-        prevCoordsText = updatePlayerCoordinates(prevCoordsText)
-      end
-    end
-
-    if now - lastHealthUpdate >= HEALTH_INTERVAL then
-      lastHealthUpdate = now
-      if ws.GetConnectionStatus() == "OPEN" then
-        prevHealth = updatePlayerHealth(prevHealth)
-      end
+    if healthTick(now) and ws.GetConnectionStatus() == "OPEN" then
+      prevHealth = updatePlayerHealth(prevHealth)
     end
 	end
 end
