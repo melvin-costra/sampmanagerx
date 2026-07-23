@@ -1187,6 +1187,7 @@ local MIN_RECONNECT_ATTEMPTS = 1
 local MAX_RECONNECT_ATTEMPTS = 20
 local DEFAULT_RECONNECT_ATTEMPTS = 3
 local CONNECT_TIMEOUT = 10
+local STABLE_CONNECTION_TIME = 30
 
 local function clampReconnectAttempts(value)
   value = tonumber(value)
@@ -1206,15 +1207,16 @@ local awaitingResult = false
 local reconnectAttempts = 0
 local reconnectAt = 0
 local connectingSince = 0
+local connectedSince = 0
 local lastTelegramInputAt = 0
 
 local function connectToTelegram()
   local status = ws.GetConnectionStatus()
-  if status == "OPEN" or status == "CONNECTING" then return end
+  if status == "OPEN" or status == "CONNECTING" then return false end
 
   if not cfg.settings.connectionKey or cfg.settings.connectionKey == "" then
     printMessage("Укажи ключ подключения. Получить его можно в телеграм боте (команда /key)")
-    return
+    return false
   end
 
   if not userWantsConnection then
@@ -1223,25 +1225,48 @@ local function connectToTelegram()
   userWantsConnection = true
   awaitingResult = true
   connectingSince = os.clock()
+  connectedSince = 0
   ws.Connect(API_URL)
   printMessage("Подключение к телеграм боту...")
+  return true
+end
+
+local function asMessageText(value)
+  local t = type(value)
+  if t == "string" then return value end
+  if t == "number" then return tostring(value) end
+  return nil
 end
 
 local function processIncomingMessage(message)
   local ok, data = pcall(decodeJson, message)
-  if ok and type(data) == "table" and data.type == IncomingMessageType.PONG then
+  if not ok or type(data) ~= "table" then
+    printMessage(message)
     return
   end
-  if ok and type(data) == "table" and data.type == IncomingMessageType.DISCONNECT then
+
+  if data.type == IncomingMessageType.PONG then
+    return
+  end
+
+  if data.type == IncomingMessageType.DISCONNECT then
     userWantsConnection = false
     awaitingResult = false
     reconnectAt = 0
-    if data.message ~= nil then printMessage(data.message) end
+    reconnectAttempts = 0
+    connectedSince = 0
+    printMessage(asMessageText(data.message) or "Соединение закрыто ботом")
+    ws.Disconnect()
     return
   end
-  if ok and type(data) == "table" and data.type ~= nil and data.message ~= nil then
+
+  if data.type ~= nil and data.message ~= nil then
     local mtype = data.type
-    local text = data.message
+    local text = asMessageText(data.message)
+    if not text then
+      printMessage("Получено некорректное сообщение от бота (тип " .. tostring(mtype) .. ")")
+      return
+    end
     if mtype == IncomingMessageType.TEXT then
       lastTelegramInputAt = os.clock()
       sampSendChat(text)
@@ -1275,6 +1300,7 @@ local function drainIncomingMessages()
     local message = ws.GetMessage()
     if message == '' then break end
     processIncomingMessage(message)
+    if not userWantsConnection then break end
   end
 end
 
@@ -1283,6 +1309,7 @@ local function disconnectFromTelegram()
   awaitingResult = false
   reconnectAt = 0
   reconnectAttempts = 0
+  connectedSince = 0
 
   local status = ws.GetConnectionStatus()
   if status == "OPEN" or status == "CONNECTING" then
@@ -1339,8 +1366,8 @@ local function updateConnection(now)
   elseif awaitingResult then
     if status == "OPEN" then
       awaitingResult = false
-      reconnectAttempts = 0
       reconnectAt = 0
+      connectedSince = now
       printMessage("Соединение установлено")
       ws.SendMessage(encodeJson({ key = cfg.settings.connectionKey, username = string.format("%s[%d]", MyNickName, MyID), server = u8(sampGetCurrentServerName()) }))
     elseif status == "CLOSED" then
@@ -1358,11 +1385,18 @@ local function updateConnection(now)
   elseif reconnectAt > 0 then
     if now >= reconnectAt then
       reconnectAt = 0
-      connectToTelegram()
+      if not connectToTelegram() then
+        scheduleReconnect(now, "Не удалось подключиться")
+      end
     end
   elseif status == "OPEN" then
+    if connectedSince > 0 and now - connectedSince >= STABLE_CONNECTION_TIME then
+      reconnectAttempts = 0
+      connectedSince = 0
+    end
     drainIncomingMessages()
   elseif status == "CLOSED" then
+    connectedSince = 0
     drainIncomingMessages()
     if not userWantsConnection then
       return
