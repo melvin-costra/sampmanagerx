@@ -1,6 +1,7 @@
 *.dll
 *.zip
 *.rar
+local/
 
 # macOS
 .DS_Store
