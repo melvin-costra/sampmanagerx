@@ -1179,6 +1179,7 @@ local function updatePlayerArmour(prevArmour)
 end
 
 local WS_POLL_INTERVAL = 0.1
+local INCOMING_PER_TICK = 10
 local COORDS_INTERVAL = 1
 local HEALTH_INTERVAL = 1
 local ARMOUR_INTERVAL = 1
@@ -1296,7 +1297,7 @@ local function processIncomingMessage(message)
 end
 
 local function drainIncomingMessages()
-  while true do
+  for _ = 1, INCOMING_PER_TICK do
     local message = ws.GetMessage()
     if message == '' then break end
     processIncomingMessage(message)
@@ -2343,11 +2344,16 @@ imgui.OnFrame(
       imgui.PushItemWidth(270)
       local keyFlags = showConnectionKey and 0 or imgui.InputTextFlags.Password
       local changed = imgui.InputText("##connectionKey", ui.connectionKey, ffi.sizeof(ui.connectionKey), keyFlags)
-      imgui.PopItemWidth()
       if changed then
         cfg.settings.connectionKey = ffi.string(ui.connectionKey)
+      end
+      if imgui.IsItemActive() then
+        sampSetChatInputEnabled(false)
+      end
+      if imgui.IsItemDeactivatedAfterEdit() then
         saveBaseConfig()
       end
+      imgui.PopItemWidth()
       imgui.SameLine()
       if imgui.Button((showConnectionKey and faicons('EYE_SLASH') or faicons('EYE')) .. "##toggleConnectionKey") then
         showConnectionKey = not showConnectionKey
@@ -2602,7 +2608,6 @@ imgui.OnFrame(
           imgui.Text("Действия"); imgui.SetColumnWidth(-1, w.actions)
           imgui.NextColumn()
 
-          imgui.Columns(5)
           for _, msg in ipairs(cfg.messages.items) do
             local searchQuery = ffi.string(ui.searchBuffer)
             if searchQuery == "" or (msg.tag or ""):find(searchQuery, 1, true) or msg.description:find(searchQuery, 1, true) then
@@ -2739,7 +2744,6 @@ imgui.OnFrame(
         imgui.Text("Увед."); imgui.SetColumnWidth(-1, w.notify)
         imgui.NextColumn()
 
-        imgui.Columns(4)
         for key, event in pairs(cfg.events.items) do
           local searchQuery = ffi.string(ui.eventsSearchBuffer)
           if searchQuery == "" or event.tag:find(searchQuery, 1, true) or event.description:find(searchQuery, 1, true) then
@@ -2842,7 +2846,6 @@ imgui.OnFrame(
         imgui.Text("Увед."); imgui.SetColumnWidth(-1, w.notify)
         imgui.NextColumn()
 
-        imgui.Columns(4)
         for _, dialog in ipairs(cfg.dialogs.items) do
           imgui.Separator()
           imgui.Text(tostring(dialog.style)); imgui.SetColumnWidth(-1, w.style)
@@ -2990,15 +2993,15 @@ imgui.OnFrame(
       if imgui.SliderInt("Время ожидания ответа (сек)##forwardResponseTime", forwardResponseTime, 1, 5) then
         cfg.settings.forwardResponseTime = forwardResponseTime[0]
       end
+      if imgui.IsItemDeactivatedAfterEdit() then
+        saveBaseConfig()
+      end
       if imgui.IsItemHovered() then
         imgui.BeginTooltip()
         imgui.PushTextWrapPos(300)
         imgui.TextWrapped("Когда ты отправляешь сообщение или команду из телеграма, в течение этого времени все сообщения из игрового чата пересылаются в телеграм.")
         imgui.PopTextWrapPos()
         imgui.EndTooltip()
-      end
-      if imgui.IsItemDeactivatedAfterEdit() then
-        saveBaseConfig()
       end
       imgui.PopItemWidth()
 
