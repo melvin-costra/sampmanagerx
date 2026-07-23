@@ -2301,7 +2301,7 @@ imgui.OnFrame(
     imgui.SetNextWindowSize(imgui.ImVec2(sizeX, sizeY), imgui.Cond.FirstUseEver)
     imgui.Begin("SA-MP Manager X", renderWindow, imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize)
 
-    imgui.BeginTabBar("tabbar")
+    local tabBarOpen = imgui.BeginTabBar("tabbar")
     if imgui.BeginTabItem("Главная") then
       imgui.Spacing()
       imgui.Spacing()
@@ -2544,7 +2544,9 @@ imgui.OnFrame(
           imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
         end
 
-        if (#cfg.messages.items > 0) and imgui.BeginChild("messagesList", imgui.ImVec2(-1, -1), true) then
+        if #cfg.messages.items > 0 then
+          imgui.BeginChild("messagesList", imgui.ImVec2(-1, -1), true)
+
           local w = {
             tag = 80,
             desc = 306,
@@ -2682,7 +2684,9 @@ imgui.OnFrame(
         imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
       end
 
-      if next(cfg.events.items) and imgui.BeginChild("eventsList", imgui.ImVec2(-1, -1), true) then
+      if next(cfg.events.items) then
+        imgui.BeginChild("eventsList", imgui.ImVec2(-1, -1), true)
+
         local w = {
           tag = 90,
           desc = 368,
@@ -2783,7 +2787,9 @@ imgui.OnFrame(
         imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
       end
 
-      if (#cfg.dialogs.items > 0) and imgui.BeginChild("dialogsList", imgui.ImVec2(-1, -1), true) then
+      if #cfg.dialogs.items > 0 then
+        imgui.BeginChild("dialogsList", imgui.ImVec2(-1, -1), true)
+
         local w = {
           style = 52,
           desc = 412,
@@ -2965,7 +2971,9 @@ imgui.OnFrame(
       imgui.EndTabItem()
     end
 
-    imgui.EndTabBar()
+    if tabBarOpen then
+      imgui.EndTabBar()
+    end
 
     renderConfirmPopup()
     renderMessageFormPopup()
