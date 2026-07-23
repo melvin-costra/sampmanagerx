@@ -504,6 +504,7 @@ local STREETS = {
 local renderWindow, new = imgui.new.bool(false), imgui.new
 local runtimePatterns = {}
 local runtimeEndPatterns = {}
+local brokenPatterns = {}
 local collectingItem = nil
 local collectedLines = {}
 local MAX_COLLECTED_LINES = 10
@@ -901,7 +902,43 @@ local function findMessageIndex(id)
 end
 
 local function escapeLuaPattern(str)
-  return str:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
+  return (str:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))
+end
+
+local function hasBalancedCaptures(pattern)
+  local depth, i, len = 0, 1, #pattern
+  while i <= len do
+    local c = pattern:sub(i, i)
+    if c == "%" then
+      i = i + 2
+    elseif c == "[" then
+      i = i + 1
+      if pattern:sub(i, i) == "^" then i = i + 1 end
+      if pattern:sub(i, i) == "]" then i = i + 1 end
+      while i <= len and pattern:sub(i, i) ~= "]" do
+        if pattern:sub(i, i) == "%" then i = i + 1 end
+        i = i + 1
+      end
+      if i > len then return false end
+      i = i + 1
+    elseif c == "(" then
+      depth = depth + 1
+      i = i + 1
+    elseif c == ")" then
+      depth = depth - 1
+      if depth < 0 then return false end
+      i = i + 1
+    else
+      i = i + 1
+    end
+  end
+  return depth == 0
+end
+
+local function isValidLuaPattern(pattern)
+  if type(pattern) ~= "string" then return false end
+  if not hasBalancedCaptures(pattern) then return false end
+  return (pcall(string.find, "", pattern))
 end
 
 local function buildPattern(pattern)
@@ -915,16 +952,34 @@ local function buildPattern(pattern)
   }
 
   for key, value in pairs(replacements) do
-    pattern = pattern:gsub(key, value)
+    pattern = pattern:gsub(key, function() return value end)
   end
 
   return pattern
 end
 
+local function patternRuleName(msg)
+  local name = msg.description or msg.tag or msg.id
+  return tostring(name or "?")
+end
+
+local function disablePattern(pattern, ruleName)
+  if pattern == "" or brokenPatterns[pattern] then return end
+  brokenPatterns[pattern] = true
+  printMessage('Правило "' .. ruleName .. '" отключено: некорректный шаблон')
+end
+
 local function rebuildPatterns()
+  brokenPatterns = {}
   for _, msg in ipairs(cfg.messages.items) do
     runtimePatterns[msg.id] = buildPattern(msg.pattern)
     runtimeEndPatterns[msg.id] = buildPattern(msg.end_pattern)
+
+    for _, pattern in ipairs({ runtimePatterns[msg.id], runtimeEndPatterns[msg.id] }) do
+      if pattern ~= "" and not isValidLuaPattern(pattern) then
+        disablePattern(pattern, patternRuleName(msg))
+      end
+    end
   end
 end
 
@@ -945,11 +1000,19 @@ local function matchesColor(hex, colorHex)
   return false
 end
 
-local function matchesPattern(pattern, text)
+local function matchesPattern(pattern, text, ruleName)
   if not pattern or pattern == "" then
     return true
   end
-  return string.find(text, pattern) ~= nil
+  if brokenPatterns[pattern] then
+    return false
+  end
+  local ok, found = pcall(string.find, text, pattern)
+  if not ok then
+    disablePattern(pattern, ruleName or "?")
+    return false
+  end
+  return found ~= nil
 end
 
 local function handleChatMessage(color, text)
@@ -958,7 +1021,7 @@ local function handleChatMessage(color, text)
 
   if collectingItem then
     table.insert(collectedLines, text)
-    if matchesPattern(runtimeEndPatterns[collectingItem.id], text) or #collectedLines >= MAX_COLLECTED_LINES then
+    if matchesPattern(runtimeEndPatterns[collectingItem.id], text, patternRuleName(collectingItem)) or #collectedLines >= MAX_COLLECTED_LINES then
       local message = {
         type = OutcomingMessageType.TEXT,
         tag = collectingItem.tag,
@@ -986,7 +1049,7 @@ local function handleChatMessage(color, text)
   for _, msg in ipairs(cfg.messages.items) do
     if msg.is_enabled then
       if matchesColor(msg.hex_color, colorHex) then
-        if matchesPattern(runtimePatterns[msg.id], text) then
+        if matchesPattern(runtimePatterns[msg.id], text, patternRuleName(msg)) then
           if runtimeEndPatterns[msg.id] ~= "" then
             collectingItem = msg
             collectedLines = { text }
@@ -1556,10 +1619,6 @@ local function openMessageForm(msg)
   messageForm.history = snapshotChatHistory()
   messageForm.historyIndex[0] = 0
   messageForm.shouldOpen = true
-end
-
-local function isValidLuaPattern(pattern)
-  return pcall(string.find, "", pattern)
 end
 
 local function validateMessageForm()
