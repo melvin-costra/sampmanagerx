@@ -1498,10 +1498,11 @@ local function renameMessagesConfig(newName)
 end
 
 local function centeredText(text)
+  text = tostring(text or "")
   local windowW = imgui.GetWindowSize().x
   local textW = imgui.CalcTextSize(text).x
   imgui.SetCursorPosX((windowW - textW) * 0.5)
-  imgui.Text(text)
+  imgui.TextUnformatted(text)
 end
 
 local function wrapTextLines(text, maxWidth)
@@ -2511,13 +2512,13 @@ imgui.OnFrame(
             local searchQuery = ffi.string(ui.searchBuffer)
             if searchQuery == "" or (msg.tag or ""):find(searchQuery, 1, true) or msg.description:find(searchQuery, 1, true) then
               imgui.Separator()
-              imgui.Text(msg.tag or ""); imgui.SetColumnWidth(-1, w.tag)
+              imgui.TextUnformatted(msg.tag or ""); imgui.SetColumnWidth(-1, w.tag)
               imgui.NextColumn()
 
-              imgui.Text(msg.description); imgui.SetColumnWidth(-1, w.desc)
+              imgui.TextUnformatted(msg.description); imgui.SetColumnWidth(-1, w.desc)
               if imgui.IsItemHovered() then
                 imgui.BeginTooltip()
-                imgui.Text(msg.description)
+                imgui.TextUnformatted(msg.description)
                 imgui.EndTooltip()
               end
               imgui.NextColumn()
@@ -2646,13 +2647,13 @@ imgui.OnFrame(
           local searchQuery = ffi.string(ui.eventsSearchBuffer)
           if searchQuery == "" or event.tag:find(searchQuery, 1, true) or event.description:find(searchQuery, 1, true) then
             imgui.Separator()
-            imgui.Text(event.tag); imgui.SetColumnWidth(-1, w.tag)
+            imgui.TextUnformatted(event.tag); imgui.SetColumnWidth(-1, w.tag)
             imgui.NextColumn()
 
-            imgui.Text(event.description); imgui.SetColumnWidth(-1, w.desc)
+            imgui.TextUnformatted(event.description); imgui.SetColumnWidth(-1, w.desc)
             if imgui.IsItemHovered() then
               imgui.BeginTooltip()
-              imgui.Text(event.description)
+              imgui.TextUnformatted(event.description)
               imgui.EndTooltip()
             end
             imgui.NextColumn()
@@ -2748,7 +2749,7 @@ imgui.OnFrame(
           imgui.Text(tostring(dialog.style)); imgui.SetColumnWidth(-1, w.style)
           imgui.NextColumn()
 
-          imgui.Text(dialog.description); imgui.SetColumnWidth(-1, w.desc)
+          imgui.TextUnformatted(dialog.description); imgui.SetColumnWidth(-1, w.desc)
           imgui.NextColumn()
 
           imgui.SetCursorPosX(imgui.GetCursorPosX() + (w.status - 25) / 2)
@@ -2922,7 +2923,7 @@ local function initSession()
   rebuildPatterns()
 
   if cfg.settings.connectionKey and cfg.settings.connectionKey ~= "" then
-    ffi.copy(ui.connectionKey, cfg.settings.connectionKey)
+    setBuffer(ui.connectionKey, ffi.sizeof(ui.connectionKey), cfg.settings.connectionKey)
   end
 
   if cfg.settings.autoConnect and MyNickName and MyNickName ~= "" then
