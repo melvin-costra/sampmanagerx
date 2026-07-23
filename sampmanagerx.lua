@@ -1,8 +1,10 @@
-local MIGRATION = "14.07.2026"
+local MIGRATION = "23.07.2026"
 script_author("melvin-costra")
 script_name("SA-MP Manager X")
-script_version("1.1.1")
+script_version("1.2.0")
 script_url("https://github.com/melvin-costra/sampmanagerx")
+
+math.randomseed(os.time())
 
 ------------------------------------ Libs  ------------------------------------
 local ev = require "samp.events"
@@ -33,8 +35,10 @@ wrapToGame("sampSendChat")
 wrapToGame("sampProcessChatInput")
 
 ------------------------------------ Variables  ------------------------------------
-local CONFIG_PATH = "moonloader/config/sampmanagerx/_base.json"
-local API_URL = "wss://sampmanagerx.dpdns.org/ws"
+local CONFIG_DIR = "moonloader/config/sampmanagerx"
+local BASE_CONFIG_PATH = CONFIG_DIR .. "/_base.json"
+local MESSAGES_DIR = CONFIG_DIR .. "/messages"
+local API_URL = "wss://api.sampmanagerx.dpdns.org/ws"
 local DIALOG_SEPARATOR = string.char(31)
 local BODY_PARTS = {
   [3] = "туловище",
@@ -95,6 +99,28 @@ local DAMAGE_WEAPONS = {
   [51] = "взрыв",
   [53] = "утопление",
   [54] = "падение / удар"
+}
+local SPECIAL_ACTIONS = {
+  [0] = "нет",
+  [1] = "присел",
+  [2] = "джетпак",
+  [3] = "садится в транспорт",
+  [4] = "выходит из транспорта",
+  [5] = "танец 1",
+  [6] = "танец 2",
+  [7] = "танец 3",
+  [8] = "танец 4",
+  [10] = "руки вверх",
+  [11] = "телефон",
+  [12] = "сидит",
+  [13] = "убрал телефон",
+  [20] = "пьёт пиво",
+  [21] = "курит",
+  [22] = "пьёт вино",
+  [23] = "пьёт спранк",
+  [24] = "в наручниках",
+  [25] = "несёт на руках",
+  [68] = "справляет нужду",
 }
 local STREETS = {
   {"Загородный клуб «Ависпа»", -2667.810, -302.135, -28.831, -2646.400, -262.320, 71.169},
@@ -478,9 +504,13 @@ local STREETS = {
 local renderWindow, new = imgui.new.bool(false), imgui.new
 local runtimePatterns = {}
 local runtimeEndPatterns = {}
+local brokenPatterns = {}
 local collectingItem = nil
 local collectedLines = {}
 local MAX_COLLECTED_LINES = 10
+
+local CHAT_HISTORY_MAX = 50
+local chatHistory = {}
 local notificationSound = nil
 local NOTIFICATION_SOUND_PATH = getWorkingDirectory() .. '\\resource\\audio\\icq.mp3'
 
@@ -506,6 +536,7 @@ local DisconnectActionType = {
 
 local ui = {
   connectionKey = new.char[256](""),
+  maxReconnectAttempts = new.int(3),
   searchBuffer = new.char[256](""),
   eventsSearchBuffer = new.char[256](""),
 }
@@ -517,6 +548,43 @@ local confirmPopup = {
   onConfirm = nil,
   shouldOpen = false,
 }
+
+local MESSAGE_TAG_MAX = 10
+local MESSAGE_DESCRIPTION_MAX = 128
+
+local messageForm = {
+  id = "##messageFormPopup",
+  mode = "create",
+  targetId = nil,
+  shouldOpen = false,
+  tag = new.char[64](""),
+  description = new.char[512](""),
+  hexColor = new.char[16](""),
+  pattern = new.char[256](""),
+  endPattern = new.char[256](""),
+  isEnabled = new.bool(true),
+  notification = new.bool(true),
+  showCheatSheet = new.bool(false),
+  history = {},
+  historyIndex = new.int(0),
+}
+
+local configForm = {
+  id = "##configFormPopup",
+  mode = "create",
+  targetId = nil,
+  shouldOpen = false,
+  name = new.char[64](""),
+  clone = new.bool(false),
+  canClone = false,
+}
+
+local messagesUpdateAvailable = false
+local messagesUpdateVersion = ""
+local messagesConfigLoaded = false
+local messagesConfigBroken = false
+local messagesTemplateAvailable = false
+local messagesTemplateExists = false
 
 ------------------------------------ Settings  ------------------------------------
 local function deepCopy(orig)
@@ -532,9 +600,11 @@ local initialCfg = {
   migration = MIGRATION,
   settings = {
     connectionKey = "",
+    activeMessagesConfig = "",
     autoConnect = false,
     systemMessages = true,
     autoReconnect = true,
+    maxReconnectAttempts = 3,
     soundNotification = false,
     soundVolume = 0.8,
     forwardResponseTime = 3,
@@ -653,390 +723,66 @@ local initialCfg = {
         is_enabled = true,
         notification = true,
       },
+      skin = {
+        tag = "СКИН",
+        description = "Изменение скина игрока",
+        is_enabled = false,
+        notification = false,
+      },
+      animation = {
+        tag = "АНИМ",
+        description = "Проигрывание анимации игроком",
+        is_enabled = false,
+        notification = false,
+      },
+      interior = {
+        tag = "ИНТЕРЬЕР",
+        description = "Смена интерьера",
+        is_enabled = true,
+        notification = true,
+      },
+      armour = {
+        tag = "БРОНЯ",
+        description = "Изменение брони игрока",
+        is_enabled = true,
+        notification = true,
+      },
+      special_action = {
+        tag = "ДЕЙСТВИЕ",
+        description = "Специальное действие игрока",
+        is_enabled = true,
+        notification = false,
+      },
+      game_text = {
+        tag = "GAMETEXT",
+        description = "Текст на экране (GameText)",
+        is_enabled = true,
+        notification = false,
+      },
     },
   },
   messages = {
+    migration = nil,
     options = {
       enabled = true,
       sendAll = false,
       notifications = true,
     },
-    items = {
-      {
-        id = "fac87dae-01c0-4ce4-a002-47444b01cf06",
-        tag = "АДМИН",
-        description = "Сообщение от админа",
-        hex_color = "d97700ff",
-        pattern = "^ Ответ от .+%[%d+%]:",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "6ebccdc4-0026-4f81-b3f8-a060c166ecde",
-        tag = "АДМИН",
-        description = "Тебя телепортировал админ",
-        hex_color = "ffffffff",
-        pattern = "^ Вас телепортировал к себе администратор Samp%-Rp",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "a30d7d35-b0d1-41f2-ac73-66c92635e666",
-        tag = "АДМИН",
-        description = "Тебя кикнули",
-        hex_color = "ff6347ff",
-        pattern = "^ Администратор .+ кикнул {NICK}",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "95d54d68-4200-4ad4-8810-f8e8aff30e33",
-        tag = "АДМИН",
-        description = "Тебя заварнили",
-        hex_color = "ff6347ff",
-        pattern = "^ Администратор: .+ выдал warn {NICK}",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "2e753240-abd9-42bf-b3a6-8ce6844e60bb",
-        tag = "АДМИН",
-        description = "Тебя забанили",
-        hex_color = "ff6347ff",
-        pattern = "^ Администратор: .+ забанил {NICK}",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "cdfbb7f2-5890-41ed-9bac-03a608b6da5a",
-        tag = "АДМИН",
-        description = "Тебя посадили в деморган",
-        hex_color = "ff6347ff",
-        pattern = "^ Администратор: .+ посадил в ДеМорган {NICK}",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "31076dfd-73d4-4a64-ad81-4f62d9998b21",
-        tag = "АДМИН",
-        description = "Тебе дали поджопник",
-        hex_color = "ff6347ff",
-        pattern = "^ Администратор: .+ дал поджопник {NICK}",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "af7e4cbe-ab08-4bb1-bc3f-6f74e7753b7c",
-        tag = "САППОРТ",
-        description = "Сообщение от саппорта",
-        hex_color = "ffc801ff",
-        pattern = "^<%-Ответ .+%[%d+%]:",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "e2a4c8d0-6b1f-4a3e-9c7d-5f8b2a1e0d3c",
-        description = "PAYDAY (зарплата)",
-        hex_color = "",
-        pattern = "^%-+===%[ .-КЛИЕНТ БАНКА SA %]===",
-        end_pattern = "^=+%[%d+:%d+%]=+",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "0cc4c3b8-eca8-4268-857c-24eee8d23dba",
-        tag = "O",
-        description = "Общий чат (/o)",
-        hex_color = "e0ffffaa",
-        pattern = "^ << .+%[%d+%]: .+ >>",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "01b2a96c-7dc1-4e5f-9a24-ba7d82494466",
-        tag = "T",
-        description = "РП чат",
-        hex_color = "",
-        pattern = "^%- [a-zA-Z0-9_]+%[%d+%]: .+",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "57d6576b-b6d1-4618-89a6-d8d2e6be8d34",
-        tag = "B",
-        description = "НонРП чат (/b)",
-        hex_color = "",
-        pattern = "^ [a-zA-Z0-9_]+: %(%( .+ %)%)",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "d3a93808-7b02-406a-8bb0-71fca94e43d1",
-        tag = "S",
-        description = "Крик",
-        hex_color = "",
-        pattern = "^ [a-zA-Z0-9_]+ крикнул.-: .+",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "aee12875-2394-4b7a-bd31-47ca1b9fc2dc",
-        tag = "SMS IN",
-        description = "Входящее SMS",
-        hex_color = "ffff00ff",
-        pattern = "^ SMS: .+ Отправитель: .+%[%d+%]",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "8a683290-a50a-4461-9528-150fbf3352c5",
-        tag = "SMS OUT",
-        description = "Исходящее SMS",
-        hex_color = "ffff00ff",
-        pattern = "^ SMS: .+ Получатель: .+%[%d+%]",
-        is_enabled = true,
-        notification = false,
-      },
-      {
-        id = "7f7089dd-1d9f-4097-9759-90e6d04a82bd",
-        tag = "M",
-        description = "Мегафон",
-        hex_color = "ffff00ff",
-        pattern = "^ {{ .+ }}",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "e3d0c432-cc90-487b-b6c3-ce7f6899e696",
-        tag = "R",
-        description = "Рация",
-        hex_color = "8d8dffff",
-        pattern = "^ .+%[%d+%]: .+",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "5783f656-4973-4c87-82ed-f923604b7dd4",
-        tag = "DEP",
-        description = "Департамент",
-        hex_color = "ff8282ff",
-        pattern = "",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "d1ae09e2-932d-48c4-a79e-192fd4708106",
-        tag = "DO",
-        description = "РП действие /do",
-        hex_color = "c2a2daff",
-        pattern = "^{FFFFFF} %(%( .+%[%d+%] %)%) {FF8000}.+",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "ec5ec895-4934-4b42-a9e0-954c6d8f325f",
-        tag = "ME",
-        description = "РП действие /me или /todo",
-        hex_color = "c2a2daff",
-        pattern = "",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "b6268787-fbb5-4016-973a-f7495fb3ee60",
-        tag = "F",
-        description = "F чат банды / мафии",
-        hex_color = "01fcffff",
-        pattern = "",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "f28c11a2-78f7-48eb-b21c-78d92e29acb7",
-        tag = "FS",
-        description = "Чат сквада",
-        hex_color = "ffee8aff",
-        pattern = "^ %[.+%] {FFFFFF}.+%[%d+%]: .+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "da4d386a-a727-4334-98b2-ec5510f58055",
-        description = "VIP чат",
-        hex_color = "",
-        pattern = "^ %[VP%] {FFFFFF}.+%[%d+%]: .+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "58c29a03-8862-491c-b2a0-3b11464640f6",
-        description = "Объявления (обычные)",
-        hex_color = "00d900ff",
-        pattern = "^ Объявление: .+ Прислал.-: .+ Тел: %d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "a160bac9-1021-443a-ae6e-27fc1661aaa0",
-        description = "Объявления (VIP)",
-        hex_color = "ff8c37ff",
-        pattern = "^ VIP Объявление: .+ Прислал.-: .+ Тел: %d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "a4916067-ee92-49a9-a5c2-40987f38a2d9",
-        tag = "GOV",
-        description = "Гос. новости",
-        hex_color = "2641feff",
-        pattern = "",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "3ceba93e-19db-46b0-b4d8-81799c5f8e3f",
-        description = "Сообщения о ловли рыбы / предметов",
-        hex_color = "6ab1ffff",
-        pattern = "^ %[Рыбалка%] {FFFFFF}Вы успешно поймали {6AB1FF}.+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "0c18fa7d-96bb-4a68-bef5-cc035463f4af",
-        description = "Сломалась удочка",
-        hex_color = "6ab1ffff",
-        pattern = "^ %[Рыбалка%] {FFFFFF}У вас сломалась удочка",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "e89ee424-5992-412e-94b4-c6d1cddc0b75",
-        description = "Сломалась снасть",
-        hex_color = "6ab1ffff",
-        pattern = "^ %[Рыбалка%] {FFFFFF}У вас сломалась снасть",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "5593191a-8cbc-44cc-ae37-48b1062ed2fb",
-        description = "Сломалась наживка",
-        hex_color = "6ab1ffff",
-        pattern = "^ %[Рыбалка%] {FFFFFF}У вас сломалась наживка",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "62223ebd-f8c4-41da-94bf-005c666bbaa4",
-        description = "Купон на бесплатный автомобиль [A] класса",
-        hex_color = "ff8c37ff",
-        pattern = "^ %[Купон%] {FFFFFF}Вам начислен купон {FF8C37}Купон на бесплатный автомобиль %[A%]",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "c03c63d5-7037-4f80-9624-37abfc585f60",
-        description = "Купон на бесплатный автомобиль [B] класса",
-        hex_color = "ff8c37ff",
-        pattern = "^ %[Купон%] {FFFFFF}Вам начислен купон {FF8C37}Купон на бесплатный автомобиль %[B%]",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "5f26bf59-5fe9-476e-87a9-11605617d165",
-        description = "Купон на бесплатный скин",
-        hex_color = "ff8c37ff",
-        pattern = "^ %[Купон%] {FFFFFF}Вам начислен купон {FF8C37}Купон на бесплатный скин",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "f0688313-9723-4aac-aa03-9b2f5cf16419",
-        tag = "ЛОМКА",
-        description = "Началась ломка",
-        hex_color = "",
-        pattern = "^ ~~~~~~~~ У вас началась ломка ~~~~~~~~",
-        is_enabled = true,
-        notification = true,
-      },
-      {
-        id = "cd560dcf-1efc-49d0-98d6-a7757ca8e043",
-        description = "Гонки",
-        hex_color = "",
-        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Гонки {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "117ed8cf-acd3-4923-a05c-44c7e7d1a9b0",
-        description = "Пейнтбол",
-        hex_color = "",
-        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Пейнтбол {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "26d4e518-9d50-42f9-b33e-93b81ce3bef5",
-        description = "Дерби",
-        hex_color = "",
-        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Дерби {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "e1f452ea-2df8-4570-ac7c-e069ce1e8b74",
-        description = "Copchase",
-        hex_color = "",
-        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Copchase {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "f3f9eee8-18c0-454c-b124-a5813bcd1d32",
-        description = "Gun Game",
-        hex_color = "",
-        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Gun Game {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "c4dbf033-90b7-4d59-8426-ffb3c6ce26b5",
-        description = "Игра в кальмара",
-        hex_color = "",
-        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Игра в кальмара {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "52f2796f-1dfb-4493-9608-b5fb05790300",
-        description = "Prophunt",
-        hex_color = "",
-        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Prophunt {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "fa03eb41-9597-4299-9f92-b3750ed7672d",
-        description = "Захват флага",
-        hex_color = "",
-        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Захват флага {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
-        is_enabled = false,
-        notification = false,
-      },
-      {
-        id = "208192f7-bd06-4284-8a34-d6dac16f972c",
-        description = "Mario Kart",
-        hex_color = "",
-        pattern = "^ %[Центр развлечений%] {FFFFFF}Через 5 минут начнётся мероприятие {6AB1FF}Mario Kart {FFFFFF}с призовым фондом {6AB1FF}%$%d+",
-        is_enabled = false,
-        notification = false,
-      },
-    },
+    items = {},
   },
 }
 
 local cfg = deepCopy(initialCfg)
 
 ---------------------------------- Functions  ---------------------------------
+local function generateUuid()
+  local template = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
+  return string.gsub(template, '[xy]', function (c)
+    local v = (c == 'x') and math.random(0, 15) or math.random(8, 11)
+    return string.format('%x', v)
+  end)
+end
+
 local function printMessage(text)
   if cfg.settings.systemMessages == false then return end
   sampAddChatMessage("{0D1F4D}[SMX] {FFFFFF}" .. tostring(text), -1)
@@ -1050,14 +796,149 @@ local function saveCFG(newCFG, path)
   end
 end
 
+local function readJsonFile(path)
+  if not doesFileExist(path) then return nil end
+  local file = io.open(path, "r")
+  if not file then return nil end
+  local rawData = file:read("*a")
+  file:close()
+  local ok, data = pcall(decodeJson, rawData)
+  if not ok or type(data) ~= "table" then return nil end
+  return data
+end
+
+local function messagesTemplatePath(id) return MESSAGES_DIR .. "/" .. id .. ".default.json" end
+local function messagesWorkingPath(id)  return MESSAGES_DIR .. "/" .. id .. ".json" end
+
+local availableConfigs = {}
+
+local function listMessageConfigs()
+  local seen, list = {}, {}
+  local handle, name = findFirstFile(MESSAGES_DIR .. "/*.json")
+  while name and name ~= "" do
+    local id = name:match("^(.+)%.default%.json$") or name:match("^(.+)%.json$") or ""
+    if id ~= "" and not seen[id] then
+      seen[id] = true
+      table.insert(list, { id = id, name = id })
+    end
+    name = findNextFile(handle)
+  end
+  if handle then findClose(handle) end
+
+  table.sort(list, function(a, b) return a.name:lower() < b.name:lower() end)
+  return list
+end
+
+local function refreshMessageConfigs()
+  availableConfigs = listMessageConfigs()
+end
+
+local function saveBaseConfig()
+  saveCFG({
+    migration = cfg.migration,
+    settings  = cfg.settings,
+    dialogs   = cfg.dialogs,
+    events    = cfg.events,
+  }, BASE_CONFIG_PATH)
+end
+
+local function saveMessagesConfig()
+  local id = cfg.settings.activeMessagesConfig
+  if not id or id == "" then return end
+  saveCFG({
+    migration = cfg.messages.migration,
+    options   = cfg.messages.options,
+    items     = cfg.messages.items,
+  }, messagesWorkingPath(id))
+end
+
 local function updatePlayerVariables()
   _, MyID = sampGetPlayerIdByCharHandle(PLAYER_PED)
   MyNickName = sampGetPlayerNickname(MyID)
   MyMoney = getPlayerMoney()
 end
 
+local function trim(s)
+  return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function utf8Len(s)
+  local _, count = tostring(s or ""):gsub("[^\128-\191]", "")
+  return count
+end
+
+local function utf8Truncate(s, maxChars)
+  s = tostring(s or "")
+  if utf8Len(s) <= maxChars then return s end
+  local chars = 0
+  for i = 1, #s do
+    local byte = s:byte(i)
+    if byte < 128 or byte >= 192 then
+      if chars == maxChars then return s:sub(1, i - 1) .. "..." end
+      chars = chars + 1
+    end
+  end
+  return s
+end
+
+local function setBuffer(buf, size, str)
+  ffi.fill(buf, size, 0)
+  str = tostring(str or "")
+  if #str >= size then
+    str = str:sub(1, size - 1)
+    local cut = #str
+    while cut > 0 and str:byte(cut) >= 128 and str:byte(cut) < 192 do cut = cut - 1 end
+    if cut > 0 and str:byte(cut) >= 192 then cut = cut - 1 end
+    str = str:sub(1, cut)
+  end
+  ffi.copy(buf, str)
+end
+
+local function findMessageIndex(id)
+  for i, msg in ipairs(cfg.messages.items) do
+    if tostring(msg.id) == tostring(id) then return i end
+  end
+  return nil
+end
+
 local function escapeLuaPattern(str)
-  return str:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
+  return (str:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1"))
+end
+
+local function hasBalancedCaptures(pattern)
+  local depth, i, len = 0, 1, #pattern
+  while i <= len do
+    local c = pattern:sub(i, i)
+    if c == "%" then
+      i = i + 2
+    elseif c == "[" then
+      i = i + 1
+      if pattern:sub(i, i) == "^" then i = i + 1 end
+      if pattern:sub(i, i) == "]" then i = i + 1 end
+      while i <= len and pattern:sub(i, i) ~= "]" do
+        if pattern:sub(i, i) == "%" then i = i + 1 end
+        i = i + 1
+      end
+      if i > len then return false end
+      i = i + 1
+    elseif c == "(" then
+      depth = depth + 1
+      i = i + 1
+    elseif c == ")" then
+      depth = depth - 1
+      if depth < 0 then return false end
+      i = i + 1
+    else
+      i = i + 1
+    end
+  end
+  return depth == 0
+end
+
+local function isValidLuaPattern(pattern)
+  if type(pattern) ~= "string" then return false end
+  if not hasBalancedCaptures(pattern) then return false end
+  return (pcall(string.find, "", pattern))
 end
 
 local function buildPattern(pattern)
@@ -1071,16 +952,34 @@ local function buildPattern(pattern)
   }
 
   for key, value in pairs(replacements) do
-    pattern = pattern:gsub(key, value)
+    pattern = pattern:gsub(key, function() return value end)
   end
 
   return pattern
 end
 
+local function patternRuleName(msg)
+  local name = msg.description or msg.tag or msg.id
+  return tostring(name or "?")
+end
+
+local function disablePattern(pattern, ruleName)
+  if pattern == "" or brokenPatterns[pattern] then return end
+  brokenPatterns[pattern] = true
+  printMessage('Правило "' .. ruleName .. '" отключено: некорректный шаблон')
+end
+
 local function rebuildPatterns()
+  brokenPatterns = {}
   for _, msg in ipairs(cfg.messages.items) do
     runtimePatterns[msg.id] = buildPattern(msg.pattern)
     runtimeEndPatterns[msg.id] = buildPattern(msg.end_pattern)
+
+    for _, pattern in ipairs({ runtimePatterns[msg.id], runtimeEndPatterns[msg.id] }) do
+      if pattern ~= "" and not isValidLuaPattern(pattern) then
+        disablePattern(pattern, patternRuleName(msg))
+      end
+    end
   end
 end
 
@@ -1101,19 +1000,28 @@ local function matchesColor(hex, colorHex)
   return false
 end
 
-local function matchesPattern(pattern, text)
+local function matchesPattern(pattern, text, ruleName)
   if not pattern or pattern == "" then
     return true
   end
-  return string.find(text, pattern) ~= nil
+  if brokenPatterns[pattern] then
+    return false
+  end
+  local ok, found = pcall(string.find, text, pattern)
+  if not ok then
+    disablePattern(pattern, ruleName or "?")
+    return false
+  end
+  return found ~= nil
 end
 
 local function handleChatMessage(color, text)
+  if not messagesConfigLoaded then return end
   if not cfg.messages.options.enabled then return end
 
   if collectingItem then
     table.insert(collectedLines, text)
-    if matchesPattern(runtimeEndPatterns[collectingItem.id], text) or #collectedLines >= MAX_COLLECTED_LINES then
+    if matchesPattern(runtimeEndPatterns[collectingItem.id], text, patternRuleName(collectingItem)) or #collectedLines >= MAX_COLLECTED_LINES then
       local message = {
         type = OutcomingMessageType.TEXT,
         tag = collectingItem.tag,
@@ -1141,7 +1049,7 @@ local function handleChatMessage(color, text)
   for _, msg in ipairs(cfg.messages.items) do
     if msg.is_enabled then
       if matchesColor(msg.hex_color, colorHex) then
-        if matchesPattern(runtimePatterns[msg.id], text) then
+        if matchesPattern(runtimePatterns[msg.id], text, patternRuleName(msg)) then
           if runtimeEndPatterns[msg.id] ~= "" then
             collectingItem = msg
             collectedLines = { text }
@@ -1248,27 +1156,68 @@ local function updatePlayerHealth(prevHealth)
   return prevHealth
 end
 
+local function updatePlayerArmour(prevArmour)
+  if not (cfg.events.items.armour and cfg.events.items.armour.is_enabled) then
+    return prevArmour
+  end
+
+  local armour = getCharArmour(PLAYER_PED)
+
+  if armour ~= prevArmour then
+    local text
+    if prevArmour then
+      local diff = armour - prevArmour
+      text = string.format("%.0f (%s%.0f)", armour, diff > 0 and "+" or "", diff)
+    else
+      text = string.format("%.0f", armour)
+    end
+    fireEvent("armour", text)
+    return armour
+  end
+
+  return prevArmour
+end
+
 local WS_POLL_INTERVAL = 0.1
+local INCOMING_PER_TICK = 10
 local COORDS_INTERVAL = 1
 local HEALTH_INTERVAL = 1
+local ARMOUR_INTERVAL = 1
 local RECONNECT_DELAY = 3
-local MAX_RECONNECT_ATTEMPTS = 3
+local MIN_RECONNECT_ATTEMPTS = 1
+local MAX_RECONNECT_ATTEMPTS = 20
+local DEFAULT_RECONNECT_ATTEMPTS = 3
 local CONNECT_TIMEOUT = 10
+local STABLE_CONNECTION_TIME = 30
+
+local function clampReconnectAttempts(value)
+  value = tonumber(value)
+  if not value then return DEFAULT_RECONNECT_ATTEMPTS end
+  value = math.floor(value)
+  if value < MIN_RECONNECT_ATTEMPTS then return MIN_RECONNECT_ATTEMPTS end
+  if value > MAX_RECONNECT_ATTEMPTS then return MAX_RECONNECT_ATTEMPTS end
+  return value
+end
+
+local function getMaxReconnectAttempts()
+  return clampReconnectAttempts(cfg.settings.maxReconnectAttempts)
+end
 
 local userWantsConnection = false
 local awaitingResult = false
 local reconnectAttempts = 0
 local reconnectAt = 0
 local connectingSince = 0
+local connectedSince = 0
 local lastTelegramInputAt = 0
 
 local function connectToTelegram()
   local status = ws.GetConnectionStatus()
-  if status == "OPEN" or status == "CONNECTING" then return end
+  if status == "OPEN" or status == "CONNECTING" then return false end
 
   if not cfg.settings.connectionKey or cfg.settings.connectionKey == "" then
     printMessage("Укажи ключ подключения. Получить его можно в телеграм боте (команда /key)")
-    return
+    return false
   end
 
   if not userWantsConnection then
@@ -1277,25 +1226,48 @@ local function connectToTelegram()
   userWantsConnection = true
   awaitingResult = true
   connectingSince = os.clock()
+  connectedSince = 0
   ws.Connect(API_URL)
   printMessage("Подключение к телеграм боту...")
+  return true
+end
+
+local function asMessageText(value)
+  local t = type(value)
+  if t == "string" then return value end
+  if t == "number" then return tostring(value) end
+  return nil
 end
 
 local function processIncomingMessage(message)
   local ok, data = pcall(decodeJson, message)
-  if ok and type(data) == "table" and data.type == IncomingMessageType.PONG then
+  if not ok or type(data) ~= "table" then
+    printMessage(message)
     return
   end
-  if ok and type(data) == "table" and data.type == IncomingMessageType.DISCONNECT then
+
+  if data.type == IncomingMessageType.PONG then
+    return
+  end
+
+  if data.type == IncomingMessageType.DISCONNECT then
     userWantsConnection = false
     awaitingResult = false
     reconnectAt = 0
-    if data.message ~= nil then printMessage(data.message) end
+    reconnectAttempts = 0
+    connectedSince = 0
+    printMessage(asMessageText(data.message) or "Соединение закрыто ботом")
+    ws.Disconnect()
     return
   end
-  if ok and type(data) == "table" and data.type ~= nil and data.message ~= nil then
+
+  if data.type ~= nil and data.message ~= nil then
     local mtype = data.type
-    local text = data.message
+    local text = asMessageText(data.message)
+    if not text then
+      printMessage("Получено некорректное сообщение от бота (тип " .. tostring(mtype) .. ")")
+      return
+    end
     if mtype == IncomingMessageType.TEXT then
       lastTelegramInputAt = os.clock()
       sampSendChat(text)
@@ -1310,6 +1282,7 @@ local function processIncomingMessage(message)
       button = tonumber(button)
       listitem = tonumber(listitem)
       if dialogId and button and listitem then
+        lastTelegramInputAt = os.clock()
         if listitem >= 0 or #input > 0 then
           sampSendDialogResponse(dialogId, button, listitem, u8:decode(input or ""))
           return
@@ -1324,10 +1297,11 @@ local function processIncomingMessage(message)
 end
 
 local function drainIncomingMessages()
-  while true do
+  for _ = 1, INCOMING_PER_TICK do
     local message = ws.GetMessage()
     if message == '' then break end
     processIncomingMessage(message)
+    if not userWantsConnection then break end
   end
 end
 
@@ -1336,6 +1310,7 @@ local function disconnectFromTelegram()
   awaitingResult = false
   reconnectAt = 0
   reconnectAttempts = 0
+  connectedSince = 0
 
   local status = ws.GetConnectionStatus()
   if status == "OPEN" or status == "CONNECTING" then
@@ -1371,14 +1346,15 @@ local function scheduleReconnect(now, reason)
     performDisconnectAction()
     return
   end
-  if reconnectAttempts < MAX_RECONNECT_ATTEMPTS then
+  local maxAttempts = getMaxReconnectAttempts()
+  if reconnectAttempts < maxAttempts then
     reconnectAttempts = reconnectAttempts + 1
     reconnectAt = now + RECONNECT_DELAY
-    printMessage(reason .. ". Переподключение через " .. RECONNECT_DELAY .. " с... (" .. reconnectAttempts .. "/" .. MAX_RECONNECT_ATTEMPTS .. ")")
+    printMessage(reason .. ". Переподключение через " .. RECONNECT_DELAY .. " с... (" .. reconnectAttempts .. "/" .. maxAttempts .. ")")
   else
     userWantsConnection = false
     reconnectAt = 0
-    printMessage("Не удалось переподключиться после " .. MAX_RECONNECT_ATTEMPTS .. " попыток. Попробуй позже.")
+    printMessage("Не удалось переподключиться после " .. maxAttempts .. " попыток. Попробуй позже.")
     performDisconnectAction()
   end
 end
@@ -1391,10 +1367,10 @@ local function updateConnection(now)
   elseif awaitingResult then
     if status == "OPEN" then
       awaitingResult = false
-      reconnectAttempts = 0
       reconnectAt = 0
+      connectedSince = now
       printMessage("Соединение установлено")
-      ws.SendMessage(encodeJson({ key = cfg.settings.connectionKey, username = MyNickName }))
+      ws.SendMessage(encodeJson({ key = cfg.settings.connectionKey, username = string.format("%s[%d]", MyNickName, MyID), server = u8(sampGetCurrentServerName()) }))
     elseif status == "CLOSED" then
       awaitingResult = false
       drainIncomingMessages()
@@ -1410,11 +1386,18 @@ local function updateConnection(now)
   elseif reconnectAt > 0 then
     if now >= reconnectAt then
       reconnectAt = 0
-      connectToTelegram()
+      if not connectToTelegram() then
+        scheduleReconnect(now, "Не удалось подключиться")
+      end
     end
   elseif status == "OPEN" then
+    if connectedSince > 0 and now - connectedSince >= STABLE_CONNECTION_TIME then
+      reconnectAttempts = 0
+      connectedSince = 0
+    end
     drainIncomingMessages()
   elseif status == "CLOSED" then
+    connectedSince = 0
     drainIncomingMessages()
     if not userWantsConnection then
       return
@@ -1431,11 +1414,193 @@ local function showConfirm(title, text, onConfirm)
   confirmPopup.shouldOpen = true
 end
 
+local function applyMessagesUpdate()
+  local id = cfg.settings.activeMessagesConfig
+  if not id or id == "" then return end
+  local tpl = readJsonFile(messagesTemplatePath(id))
+  if not tpl or type(tpl.items) ~= "table" then return end
+  cfg.messages.migration = tpl.migration
+  cfg.messages.items = deepCopy(tpl.items)
+  if type(tpl.options) == "table" then
+    cfg.messages.options = deepCopy(tpl.options)
+  end
+  saveMessagesConfig()
+  rebuildPatterns()
+  messagesUpdateAvailable = false
+  messagesUpdateVersion = ""
+  messagesConfigBroken = false
+  messagesConfigLoaded = true
+end
+
+local function resetEventsConfig()
+  cfg.events = deepCopy(initialCfg.events)
+  saveBaseConfig()
+end
+
+local function loadMessagesConfig(id)
+  cfg.messages = deepCopy(initialCfg.messages)
+  collectingItem = nil
+  collectedLines = {}
+  messagesUpdateAvailable = false
+  messagesUpdateVersion = ""
+  messagesConfigLoaded = false
+  messagesConfigBroken = false
+  messagesTemplateAvailable = false
+  messagesTemplateExists = false
+
+  if not id or id == "" then return end
+
+  messagesTemplateExists = doesFileExist(messagesTemplatePath(id))
+
+  local template = readJsonFile(messagesTemplatePath(id))
+  local working = readJsonFile(messagesWorkingPath(id))
+
+  if not working then
+    if template and type(template.items) == "table" then
+      cfg.messages.migration = template.migration
+      cfg.messages.items     = deepCopy(template.items)
+      if type(template.options) == "table" then
+        cfg.messages.options = deepCopy(template.options)
+      end
+      saveMessagesConfig()
+      messagesConfigLoaded = true
+    end
+    return
+  end
+
+  if type(working.items) ~= "table" then
+    printMessage("Конфиг сообщений повреждён")
+    messagesConfigBroken = true
+    messagesTemplateAvailable = template ~= nil and type(template.items) == "table"
+    return
+  end
+
+  cfg.messages.items = working.items
+  messagesConfigLoaded = true
+  if type(working.options) == "table" then
+    cfg.messages.options = working.options
+  end
+  cfg.messages.migration = working.migration
+
+  local missingId = false
+  for _, msg in ipairs(cfg.messages.items) do
+    if msg.id == nil or msg.id == "" then
+      msg.id = generateUuid()
+      missingId = true
+    end
+  end
+  if missingId then saveMessagesConfig() end
+
+  if template then
+    if working.migration == nil then
+      cfg.messages.migration = template.migration
+      saveMessagesConfig()
+    elseif template.migration ~= working.migration then
+      messagesUpdateAvailable = true
+      messagesUpdateVersion = template.migration or ""
+    end
+  end
+end
+
+local function selectMessagesConfig(id)
+  cfg.settings.activeMessagesConfig = id or ""
+  saveBaseConfig()
+  loadMessagesConfig(cfg.settings.activeMessagesConfig)
+  rebuildPatterns()
+end
+
+local function isValidConfigName(name, ignoreId)
+  name = trim(name)
+  if name == "" then
+    return false, "Введи название конфига"
+  end
+  if utf8Len(name) > 40 then
+    return false, "Максимум 40 символов"
+  end
+  if not name:match("^[A-Za-z0-9_%-]+$") then
+    return false, "Только латиница, цифры, - и _"
+  end
+  if name ~= ignoreId and (doesFileExist(messagesWorkingPath(name)) or doesFileExist(messagesTemplatePath(name))) then
+    return false, "Конфиг с таким именем уже существует"
+  end
+  return true
+end
+
+local function createMessagesConfig(name, clone)
+  name = trim(name)
+  if not isValidConfigName(name) then return end
+
+  local data
+  if clone and messagesConfigLoaded then
+    data = {
+      migration = cfg.messages.migration,
+      options   = deepCopy(cfg.messages.options),
+      items     = deepCopy(cfg.messages.items),
+    }
+  else
+    data = {
+      migration = MIGRATION,
+      options   = deepCopy(initialCfg.messages.options),
+      items     = {},
+    }
+  end
+
+  saveCFG(data, messagesWorkingPath(name))
+  refreshMessageConfigs()
+  selectMessagesConfig(name)
+end
+
+local function makeMessagesTemplate()
+  local id = cfg.settings.activeMessagesConfig
+  if not id or id == "" or not messagesConfigLoaded then return end
+  saveCFG({
+    migration = cfg.messages.migration,
+    options   = cfg.messages.options,
+    items     = cfg.messages.items,
+  }, messagesTemplatePath(id))
+  messagesTemplateExists = true
+end
+
+local function deleteMessagesConfig()
+  local id = cfg.settings.activeMessagesConfig
+  if not id or id == "" then return end
+  os.remove(messagesWorkingPath(id))
+  refreshMessageConfigs()
+  selectMessagesConfig("")
+end
+
+local function deleteMessagesTemplate()
+  local id = cfg.settings.activeMessagesConfig
+  if not id or id == "" then return end
+  os.remove(messagesTemplatePath(id))
+  refreshMessageConfigs()
+  loadMessagesConfig(id)
+  rebuildPatterns()
+end
+
+local function renameMessagesConfig(newName)
+  newName = trim(newName)
+  local oldId = cfg.settings.activeMessagesConfig
+  if not oldId or oldId == "" or newName == oldId then return end
+  if not isValidConfigName(newName, oldId) then return end
+
+  if doesFileExist(messagesWorkingPath(oldId)) then
+    os.rename(messagesWorkingPath(oldId), messagesWorkingPath(newName))
+  end
+  if doesFileExist(messagesTemplatePath(oldId)) then
+    os.rename(messagesTemplatePath(oldId), messagesTemplatePath(newName))
+  end
+
+  refreshMessageConfigs()
+  selectMessagesConfig(newName)
+end
+
 local function centeredText(text)
+  text = tostring(text or "")
   local windowW = imgui.GetWindowSize().x
   local textW = imgui.CalcTextSize(text).x
   imgui.SetCursorPosX((windowW - textW) * 0.5)
-  imgui.Text(text)
+  imgui.TextUnformatted(text)
 end
 
 local function wrapTextLines(text, maxWidth)
@@ -1454,6 +1619,453 @@ local function wrapTextLines(text, maxWidth)
     table.insert(lines, line)
   end
   return lines
+end
+
+local function snapshotChatHistory()
+  local snap = {}
+  for i = 1, #chatHistory do snap[i] = chatHistory[i] end
+  return snap
+end
+
+local function historyLabel(m)
+  local s = utf8Truncate(trim((m.text or ""):gsub("{%x+}", "")), 60)
+  if s == "" then return "(пусто)" end
+  return s
+end
+
+local function openMessageForm(msg)
+  local hexColor = string.upper(msg and msg.hex_color or ""):sub(1, 8)
+
+  messageForm.mode = msg and "edit" or "create"
+  messageForm.targetId = msg and msg.id or nil
+  setBuffer(messageForm.tag, ffi.sizeof(messageForm.tag), msg and msg.tag or "")
+  setBuffer(messageForm.description, ffi.sizeof(messageForm.description), msg and msg.description or "")
+  setBuffer(messageForm.hexColor, ffi.sizeof(messageForm.hexColor), hexColor)
+  setBuffer(messageForm.pattern, ffi.sizeof(messageForm.pattern), msg and msg.pattern or "")
+  setBuffer(messageForm.endPattern, ffi.sizeof(messageForm.endPattern), msg and msg.end_pattern or "")
+  if msg then
+    messageForm.isEnabled[0] = msg.is_enabled == true
+    messageForm.notification[0] = msg.notification == true
+  else
+    messageForm.isEnabled[0] = true
+    messageForm.notification[0] = true
+  end
+  messageForm.showCheatSheet[0] = false
+  messageForm.history = snapshotChatHistory()
+  messageForm.historyIndex[0] = 0
+  messageForm.shouldOpen = true
+end
+
+local function validateMessageForm()
+  local values = {
+    tag = trim(ffi.string(messageForm.tag)),
+    description = trim(ffi.string(messageForm.description)),
+    hexColor = trim(ffi.string(messageForm.hexColor)),
+    pattern = trim(ffi.string(messageForm.pattern)),
+    endPattern = trim(ffi.string(messageForm.endPattern)),
+  }
+  local errors = {}
+
+  if utf8Len(values.tag) > MESSAGE_TAG_MAX then
+    errors.tag = "Максимум " .. MESSAGE_TAG_MAX .. " символов"
+  end
+
+  if values.description == "" then
+    errors.description = "Обязательное поле"
+  elseif utf8Len(values.description) > MESSAGE_DESCRIPTION_MAX then
+    errors.description = "Максимум " .. MESSAGE_DESCRIPTION_MAX .. " символов"
+  end
+
+  if values.hexColor ~= "" and not values.hexColor:match("^%x%x%x%x%x%x%x%x$") then
+    errors.hexColor = "Нужно 8 hex-символов, напр. FFAA00FF"
+  end
+
+  if values.pattern ~= "" and not isValidLuaPattern(values.pattern) then
+    errors.pattern = "Некорректный шаблон"
+  end
+
+  if values.endPattern ~= "" and not isValidLuaPattern(values.endPattern) then
+    errors.endPattern = "Некорректный шаблон"
+  end
+
+  if values.hexColor == "" and values.pattern == "" then
+    errors.general = "Заполни цвет или шаблон - хотя бы одно из двух"
+  end
+
+  return values, errors, next(errors) == nil
+end
+
+local function submitMessageForm(values)
+  local item = {
+    tag = values.tag ~= "" and values.tag or nil,
+    description = values.description,
+    hex_color = values.hexColor ~= "" and string.lower(values.hexColor) or nil,
+    pattern = values.pattern ~= "" and values.pattern or nil,
+    end_pattern = values.endPattern ~= "" and values.endPattern or nil,
+    is_enabled = messageForm.isEnabled[0],
+    notification = messageForm.notification[0],
+  }
+
+  if messageForm.mode == "edit" then
+    local index = findMessageIndex(messageForm.targetId)
+    if not index then return end
+    item.id = cfg.messages.items[index].id
+    cfg.messages.items[index] = item
+  else
+    item.id = generateUuid()
+    table.insert(cfg.messages.items, item)
+  end
+
+  collectingItem = nil
+  collectedLines = {}
+
+  saveMessagesConfig()
+  rebuildPatterns()
+end
+
+local function deleteMessage(id)
+  local index = findMessageIndex(id)
+  if not index then return end
+
+  table.remove(cfg.messages.items, index)
+  runtimePatterns[id] = nil
+  runtimeEndPatterns[id] = nil
+  collectingItem = nil
+  collectedLines = {}
+
+  saveMessagesConfig()
+  rebuildPatterns()
+end
+
+local function messageFormField(label, buffer, width, flags)
+  imgui.Text(label)
+  imgui.PushItemWidth(width or -1)
+  imgui.InputText("##field_" .. label, buffer, ffi.sizeof(buffer), flags or 0)
+  imgui.PopItemWidth()
+  if imgui.IsItemActive() then
+    sampSetChatInputEnabled(false)
+  end
+end
+
+local function messageFormHint(hint, error)
+  if error then
+    imgui.TextColored(imgui.ImVec4(1, 0.35, 0.35, 1), error)
+  else
+    imgui.TextDisabled(hint)
+  end
+end
+
+local SAMPLE_MATCH_COLOR   = imgui.ImVec4(0.45, 0.92, 0.50, 1)
+local SAMPLE_DIM_COLOR     = imgui.ImVec4(0.60, 0.60, 0.60, 1)
+local SAMPLE_ERROR_COLOR   = imgui.ImVec4(1.00, 0.35, 0.35, 1)
+
+local function isWsByte(b)
+  return b == 32 or (b >= 9 and b <= 13)
+end
+
+local function tokenizeSample(seg, color, out)
+  local i, n = 1, #seg
+  while i <= n do
+    local ws = isWsByte(seg:byte(i))
+    local j = i + 1
+    while j <= n and (isWsByte(seg:byte(j)) == ws) do j = j + 1 end
+    out[#out + 1] = { text = seg:sub(i, j - 1), color = color }
+    i = j
+  end
+end
+
+local function renderHighlightedSample(text, s, e, wrapWidth)
+  local tokens = {}
+  if s and e and e >= s then
+    if s > 1 then tokenizeSample(text:sub(1, s - 1), SAMPLE_DIM_COLOR, tokens) end
+    tokenizeSample(text:sub(s, e), SAMPLE_MATCH_COLOR, tokens)
+    if e < #text then tokenizeSample(text:sub(e + 1), SAMPLE_DIM_COLOR, tokens) end
+  else
+    tokenizeSample(text, SAMPLE_DIM_COLOR, tokens)
+  end
+
+  local lineW, lineStart = 0, true
+  for _, tok in ipairs(tokens) do
+    local w = imgui.CalcTextSize(tok.text).x
+    if not lineStart and lineW + w > wrapWidth then
+      lineStart, lineW = true, 0
+    end
+    if not lineStart then imgui.SameLine(0, 0) end
+    imgui.PushStyleColor(imgui.Col.Text, tok.color)
+    imgui.TextUnformatted(tok.text)
+    imgui.PopStyleColor()
+    lineStart, lineW = false, lineW + w
+  end
+end
+
+local function renderSamplePreview(id, patternBuf)
+  local sample = messageForm.history[messageForm.historyIndex[0]]
+  if not sample then return end
+  local raw = trim(ffi.string(patternBuf))
+
+  local matched, s, e
+  if raw ~= "" then
+    local ok
+    ok, s, e = pcall(string.find, sample.text, buildPattern(raw))
+    matched = ok and s ~= nil
+
+    if matched then
+      imgui.TextColored(SAMPLE_MATCH_COLOR, faicons('CIRCLE_CHECK') .. " Совпадает")
+    else
+      imgui.TextColored(SAMPLE_ERROR_COLOR, faicons('XMARK') .. " Не совпадает")
+    end
+  end
+
+  imgui.BeginChild(id, imgui.ImVec2(-1, 50), true)
+  renderHighlightedSample(sample.text, matched and s or nil, matched and e or nil, imgui.GetContentRegionAvail().x)
+  imgui.EndChild()
+end
+
+local CHEAT_HEADER_COLOR = imgui.ImVec4(1.00, 0.80, 0.35, 1)
+local CHEAT_TOKEN_COLOR  = imgui.ImVec4(0.55, 0.82, 1.00, 1)
+
+local CHEAT_SHEET = {
+  { title = "Основы", rows = {
+    { "^",  "начало строки" },
+    { "$",  "конец строки" },
+    { ".",  "любой один символ" },
+    { "%",  "экранирует спецсимвол, напр. %. = точка" },
+  }},
+  { title = "Сколько раз", rows = {
+    { "+",  "1 и больше" },
+    { "*",  "0 и больше" },
+    { "-",  "0 и больше, но минимально (лениво)" },
+    { "?",  "0 или 1" },
+  }},
+  { title = "Классы символов", rows = {
+    { "%d", "цифра 0-9" },
+    { "%a", "буква" },
+    { "%w", "буква или цифра" },
+    { "%s", "пробел" },
+    { "%x", "hex-символ (0-9, a-f)" },
+    { "%p", "знак пунктуации" },
+  }, note = "Заглавная буква = отрицание: %D не цифра, %A не буква, %S не пробел." },
+  { title = "Наборы [ ]", rows = {
+    { "[abc]",         "любой из a, b, c" },
+    { "[a-z]",         "диапазон a..z" },
+    { "[a-zA-Z0-9_]",  "символ ника" },
+    { "[^0-9]",        "любой, кроме цифр" },
+  }},
+  { title = "Экранирование", note = "Спецсимволы экранируй знаком %:  %[  %]  %(  %)  %.  %+  %-  %*  %?  %^  %$  %%" },
+  { title = "Плейсхолдеры", rows = {
+    { "{NICK}",  "твой ник" },
+    { "{MY_ID}", "твой игровой ID" },
+  }, note = "Подставляются автоматически перед сравнением." },
+  { title = "Многострочные", note = "«Шаблон» ловит первую строку, «Шаблон конца» — строку, на которой сбор завершается. Всё между ними собирается как одно сообщение." },
+  { title = "Примеры", examples = {
+    { "^ Ответ от .+%[%d+%]:",           "ответ администратора" },
+    { "^ Администратор .+ кикнул {NICK}", "тебя кикнули (ник подставится)" },
+    { "^ [a-zA-Z0-9_]+%[%d+%]: .+",       "игрок пишет в чат" },
+    { "{%x+}",                            "цветовой код в тексте, напр. {FFFFFF}" },
+  }, note = "Многострочное (PAYDAY):\nШаблон:  ^%-+===%[ .-КЛИЕНТ БАНКА SA %]===\nШаблон конца:  ^=+%[%d+:%d+%]=+" },
+}
+
+local function cheatText(col, text)
+  if col then imgui.PushStyleColor(imgui.Col.Text, col) end
+  imgui.PushTextWrapPos(0)
+  imgui.TextUnformatted(text)
+  imgui.PopTextWrapPos()
+  if col then imgui.PopStyleColor() end
+end
+
+local function renderPatternCheatSheet()
+  cheatText(CHEAT_HEADER_COLOR, "Шпаргалка по Lua-шаблонам")
+  cheatText(SAMPLE_DIM_COLOR, "Синтаксис для полей «Шаблон» и «Шаблон конца».")
+  imgui.Spacing()
+
+  for _, section in ipairs(CHEAT_SHEET) do
+    imgui.Separator()
+    cheatText(CHEAT_HEADER_COLOR, section.title)
+    imgui.Spacing()
+
+    if section.rows then
+      for _, row in ipairs(section.rows) do
+        cheatText(CHEAT_TOKEN_COLOR, row[1])
+        imgui.SameLine(88)
+        cheatText(nil, row[2])
+      end
+    end
+
+    if section.examples then
+      for _, ex in ipairs(section.examples) do
+        cheatText(CHEAT_TOKEN_COLOR, ex[1])
+        cheatText(SAMPLE_DIM_COLOR, "  " .. ex[2])
+        imgui.Spacing()
+      end
+    end
+
+    if section.note then
+      cheatText(SAMPLE_DIM_COLOR, section.note)
+    end
+
+    imgui.Spacing()
+  end
+end
+
+local function renderMessageFormPopup()
+  if messageForm.shouldOpen then
+    imgui.OpenPopup(messageForm.id)
+    messageForm.shouldOpen = false
+  end
+
+  local style = imgui.GetStyle()
+  local resX, resY = getScreenResolution()
+  local formW, sheetW = 500, 300
+  local showSheet = messageForm.showCheatSheet[0]
+  local popupW = showSheet and (sheetW + formW + style.ItemSpacing.x) or formW
+  local popupH = 600
+  local btnW, btnH = 110, 28
+
+  imgui.SetNextWindowPos(imgui.ImVec2(resX / 2, resY / 2), imgui.Cond.Always, imgui.ImVec2(0.5, 0.5))
+  imgui.SetNextWindowSize(imgui.ImVec2(popupW, popupH), imgui.Cond.Always)
+
+  local flags = imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoMove + imgui.WindowFlags.NoCollapse
+  if imgui.BeginPopupModal(messageForm.id, nil, flags) then
+    local isEdit = messageForm.mode == "edit"
+    local values, errors, isValid = validateMessageForm()
+
+    imgui.Spacing()
+    centeredText(isEdit and "Редактирование сообщения" or "Новое сообщение")
+    imgui.Separator()
+    imgui.Spacing()
+
+    imgui.Checkbox("Шпаргалка по шаблонам##messageForm", messageForm.showCheatSheet)
+    imgui.Spacing()
+
+    local bodyTop = imgui.GetCursorPosY()
+    local bodyH = popupH - bodyTop - btnH - style.WindowPadding.y - 8
+
+    if showSheet then
+      imgui.BeginChild("##cheatSheet", imgui.ImVec2(sheetW, bodyH), true)
+      renderPatternCheatSheet()
+      imgui.EndChild()
+      imgui.SameLine()
+    end
+
+    imgui.BeginChild("##messageFormBody", imgui.ImVec2(0, bodyH), false)
+
+    imgui.Text("Образец из чата (для теста шаблона)")
+    do
+      local items = "(не выбрано)\0"
+      for _, m in ipairs(messageForm.history) do
+        items = items .. historyLabel(m) .. "\0"
+      end
+      local refreshW = imgui.CalcTextSize(faicons('ARROWS_ROTATE')).x + style.FramePadding.x * 2
+      imgui.PushItemWidth(imgui.GetContentRegionAvail().x - refreshW - style.ItemSpacing.x)
+      imgui.ComboStr("##historySample", messageForm.historyIndex, items, -1)
+      imgui.PopItemWidth()
+      imgui.SameLine()
+      if imgui.Button(faicons('ARROWS_ROTATE') .. "##refreshHistory") then
+        messageForm.history = snapshotChatHistory()
+        messageForm.historyIndex[0] = 0
+      end
+      if imgui.IsItemHovered() then
+        imgui.BeginTooltip()
+        imgui.Text("Обновить список из последних сообщений чата")
+        imgui.EndTooltip()
+      end
+
+      local sample = messageForm.history[messageForm.historyIndex[0]]
+      if sample then
+        local hex = string.lower(bit.tohex(sample.color))
+        local r = tonumber(hex:sub(1, 2), 16) / 255
+        local g = tonumber(hex:sub(3, 4), 16) / 255
+        local b = tonumber(hex:sub(5, 6), 16) / 255
+        local a = tonumber(hex:sub(7, 8), 16) / 255
+        imgui.ColorButton("##sampleColor", imgui.ImVec4(r, g, b, a), 0, imgui.ImVec2(imgui.GetFrameHeight(), imgui.GetFrameHeight()))
+        imgui.SameLine()
+        imgui.AlignTextToFramePadding()
+        imgui.Text(string.upper(hex))
+        imgui.SameLine()
+        if imgui.Button(faicons('PLUS') .. "##applySampleColor") then
+          setBuffer(messageForm.hexColor, ffi.sizeof(messageForm.hexColor), string.upper(hex))
+        end
+        if imgui.IsItemHovered() then
+          imgui.BeginTooltip()
+          imgui.Text("Подставить этот цвет в поле «Цвет HEX»")
+          imgui.EndTooltip()
+        end
+      else
+        imgui.TextDisabled("Выбери сообщение, чтобы видеть его цвет и тест шаблона")
+      end
+    end
+
+    imgui.Separator()
+    imgui.Dummy(imgui.ImVec2(0, 3))
+
+    messageFormField("Тег (не обязательно)", messageForm.tag, 160)
+    messageFormHint("Максимум " .. MESSAGE_TAG_MAX .. " символов", errors.tag)
+
+    imgui.Dummy(imgui.ImVec2(0, 5))
+
+    messageFormField("Описание", messageForm.description)
+    messageFormHint("Обязательно, максимум " .. MESSAGE_DESCRIPTION_MAX .. " символов", errors.description)
+
+    imgui.Dummy(imgui.ImVec2(0, 5))
+
+    messageFormField("Цвет HEX (не обязательно)", messageForm.hexColor, 160,
+      imgui.InputTextFlags.CharsHexadecimal + imgui.InputTextFlags.CharsUppercase)
+    if not errors.hexColor and values.hexColor ~= "" then
+      local r = tonumber(values.hexColor:sub(1, 2), 16) / 255
+      local g = tonumber(values.hexColor:sub(3, 4), 16) / 255
+      local b = tonumber(values.hexColor:sub(5, 6), 16) / 255
+      local a = tonumber(values.hexColor:sub(7, 8), 16) / 255
+      imgui.SameLine()
+      imgui.ColorButton("##hexPreview", imgui.ImVec4(r, g, b, a), 0, imgui.ImVec2(imgui.GetFrameHeight(), imgui.GetFrameHeight()))
+    end
+    messageFormHint("8 символов, напр. FFAA00FF - цвет сообщения в игровом чате", errors.hexColor)
+
+    imgui.Dummy(imgui.ImVec2(0, 5))
+
+    messageFormField("Шаблон (не обязательно)", messageForm.pattern)
+    messageFormHint("Lua-шаблон. Доступны {NICK} и {MY_ID}", errors.pattern)
+    renderSamplePreview("##previewPattern", messageForm.pattern)
+
+    imgui.Dummy(imgui.ImVec2(0, 5))
+
+    messageFormField("Шаблон конца (не обязательно)", messageForm.endPattern)
+    messageFormHint("Для многострочных: строка, на которой сбор завершается", errors.endPattern)
+    renderSamplePreview("##previewEndPattern", messageForm.endPattern)
+
+    imgui.Dummy(imgui.ImVec2(0, 5))
+    imgui.Checkbox("Включено##messageForm", messageForm.isEnabled)
+    imgui.SameLine(160)
+    imgui.Checkbox("Уведомления##messageForm", messageForm.notification)
+
+    if errors.general then
+      imgui.Spacing()
+      imgui.TextColored(imgui.ImVec4(1, 0.35, 0.35, 1), errors.general)
+    end
+
+    imgui.EndChild()
+
+    local rowW = btnW * 2 + style.ItemSpacing.x
+    imgui.SetCursorPosX(popupW - rowW - style.WindowPadding.x)
+    imgui.SetCursorPosY(popupH - btnH - style.WindowPadding.y)
+
+    if imgui.Button("Отмена##messageForm", imgui.ImVec2(btnW, btnH)) then
+      imgui.CloseCurrentPopup()
+    end
+    imgui.SameLine()
+
+    if not isValid then
+      imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, style.Alpha * 0.5)
+    end
+    if imgui.Button((isEdit and "Сохранить" or "Добавить") .. "##messageForm", imgui.ImVec2(btnW, btnH)) and isValid then
+      submitMessageForm(values)
+      imgui.CloseCurrentPopup()
+    end
+    if not isValid then
+      imgui.PopStyleVar(1)
+    end
+
+    imgui.EndPopup()
+  end
 end
 
 local function renderConfirmPopup()
@@ -1508,11 +2120,117 @@ local function renderConfirmPopup()
   end
 end
 
+local function openConfigForm()
+  setBuffer(configForm.name, ffi.sizeof(configForm.name), "")
+  configForm.mode = "create"
+  configForm.targetId = nil
+  configForm.clone[0] = false
+  configForm.canClone = messagesConfigLoaded
+  configForm.shouldOpen = true
+end
+
+local function openRenameForm()
+  local id = cfg.settings.activeMessagesConfig
+  if not id or id == "" then return end
+  setBuffer(configForm.name, ffi.sizeof(configForm.name), id)
+  configForm.mode = "rename"
+  configForm.targetId = id
+  configForm.clone[0] = false
+  configForm.canClone = false
+  configForm.shouldOpen = true
+end
+
+local function renderConfigFormPopup()
+  if configForm.shouldOpen then
+    imgui.OpenPopup(configForm.id)
+    configForm.shouldOpen = false
+  end
+
+  local isRename = configForm.mode == "rename"
+  local style = imgui.GetStyle()
+  local resX, resY = getScreenResolution()
+  local popupW, popupH = 360, isRename and 180 or 210
+  local btnW, btnH = 110, 28
+
+  imgui.SetNextWindowPos(imgui.ImVec2(resX / 2, resY / 2), imgui.Cond.Always, imgui.ImVec2(0.5, 0.5))
+  imgui.SetNextWindowSize(imgui.ImVec2(popupW, popupH), imgui.Cond.Always)
+
+  local flags = imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoMove + imgui.WindowFlags.NoCollapse
+  if imgui.BeginPopupModal(configForm.id, nil, flags) then
+    local name = trim(ffi.string(configForm.name))
+    local ok, err = isValidConfigName(name, isRename and configForm.targetId or nil)
+    local canSubmit = ok and (not isRename or name ~= configForm.targetId)
+
+    imgui.Spacing()
+    centeredText(isRename and "Переименовать конфиг" or "Новый конфиг")
+    imgui.Separator()
+    imgui.Spacing()
+
+    imgui.Text("Название")
+    imgui.PushItemWidth(-1)
+    imgui.InputText("##configName", configForm.name, ffi.sizeof(configForm.name))
+    imgui.PopItemWidth()
+    if imgui.IsItemActive() then
+      sampSetChatInputEnabled(false)
+    end
+    messageFormHint("Латиница, цифры, - и _ (макс. 40)", (name ~= "" and not ok) and err or nil)
+
+    if not isRename then
+      imgui.Dummy(imgui.ImVec2(0, 5))
+
+      if configForm.canClone then
+        imgui.Checkbox("Клонировать текущий конфиг", configForm.clone)
+      else
+        imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, style.Alpha * 0.5)
+        local dummy = ffi.new("bool[1]", false)
+        imgui.Checkbox("Клонировать текущий конфиг", dummy)
+        imgui.PopStyleVar(1)
+        imgui.TextDisabled("Нет выбранного конфига для клонирования")
+      end
+    end
+
+    local rowW = btnW * 2 + style.ItemSpacing.x
+    imgui.SetCursorPosX(popupW - rowW - style.WindowPadding.x)
+    imgui.SetCursorPosY(popupH - btnH - style.WindowPadding.y)
+
+    if imgui.Button("Отмена##configForm", imgui.ImVec2(btnW, btnH)) then
+      imgui.CloseCurrentPopup()
+    end
+    imgui.SameLine()
+
+    if not canSubmit then
+      imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, style.Alpha * 0.5)
+    end
+    if imgui.Button((isRename and "Сохранить" or "Создать") .. "##configForm", imgui.ImVec2(btnW, btnH)) and canSubmit then
+      if isRename then
+        renameMessagesConfig(name)
+      else
+        createMessagesConfig(name, configForm.clone[0])
+      end
+      imgui.CloseCurrentPopup()
+    end
+    if not canSubmit then
+      imgui.PopStyleVar(1)
+    end
+
+    imgui.EndPopup()
+  end
+end
+
 imgui.OnInitialize(function ()
   imgui.GetIO().IniFilename = nil
   local fontInterFile = 'moonloader/resource/fonts/Inter-Medium.ttf'
   assert(doesFileExist(fontInterFile), '[SMX] Inter font not found!')
-  fontInter = imgui.GetIO().Fonts:AddFontFromFileTTF(fontInterFile, 16, nil, imgui.GetIO().Fonts:GetGlyphRangesCyrillic())
+  glyphRanges = imgui.new.ImWchar[13](
+    0x0020, 0x00FF, -- Basic Latin + Latin-1 Supplement
+    0x0400, 0x052F, -- Cyrillic + Cyrillic Supplement
+    0x2010, 0x2027, -- General Punctuation (dashes, quotes, bullet, ellipsis)
+    0x2116, 0x2116, -- № Numero sign
+    0x2DE0, 0x2DFF, -- Cyrillic Extended-A
+    0xA640, 0xA69F, -- Cyrillic Extended-B
+    0
+  )
+  fontInter = imgui.GetIO().Fonts:AddFontFromFileTTF(fontInterFile, 16, nil, glyphRanges)
   local config = imgui.ImFontConfig()
   config.MergeMode = true
   config.PixelSnapH = true
@@ -1606,27 +2324,39 @@ imgui.OnInitialize(function ()
   colors[clr.NavWindowingHighlight]= imgui.ImVec4(1.00, 1.00, 1.00, 0.70)
 end)
 
+local showConnectionKey = false
+
 imgui.OnFrame(
   function() return renderWindow[0] end,
   function()
     local resX, resY = getScreenResolution()
-    local sizeX, sizeY = 600, 405
+    local sizeX, sizeY = 600, 440
     imgui.PushFont(fontInter)
     imgui.SetNextWindowPos(imgui.ImVec2(resX / 2, resY / 2), imgui.Cond.FirstUseEver, imgui.ImVec2(0.5, 0.5))
     imgui.SetNextWindowSize(imgui.ImVec2(sizeX, sizeY), imgui.Cond.FirstUseEver)
     imgui.Begin("SA-MP Manager X", renderWindow, imgui.WindowFlags.NoCollapse + imgui.WindowFlags.NoResize)
 
-    imgui.BeginTabBar("tabbar")
+    local tabBarOpen = imgui.BeginTabBar("tabbar")
     if imgui.BeginTabItem("Главная") then
       imgui.Spacing()
       imgui.Spacing()
       imgui.Text("Ключ подключения:")
-      imgui.PushItemWidth(250)
-      local changed = imgui.InputText("##connectionKey", ui.connectionKey, ffi.sizeof(ui.connectionKey), imgui.InputTextFlags.Password)
-      imgui.PopItemWidth()
+      imgui.PushItemWidth(270)
+      local keyFlags = showConnectionKey and 0 or imgui.InputTextFlags.Password
+      local changed = imgui.InputText("##connectionKey", ui.connectionKey, ffi.sizeof(ui.connectionKey), keyFlags)
       if changed then
         cfg.settings.connectionKey = ffi.string(ui.connectionKey)
-        saveCFG(cfg, CONFIG_PATH)
+      end
+      if imgui.IsItemActive() then
+        sampSetChatInputEnabled(false)
+      end
+      if imgui.IsItemDeactivatedAfterEdit() then
+        saveBaseConfig()
+      end
+      imgui.PopItemWidth()
+      imgui.SameLine()
+      if imgui.Button((showConnectionKey and faicons('EYE_SLASH') or faicons('EYE')) .. "##toggleConnectionKey") then
+        showConnectionKey = not showConnectionKey
       end
 
       local status = ws.GetConnectionStatus()
@@ -1644,7 +2374,13 @@ imgui.OnFrame(
 
       imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionButtonSize.x) / 2, 130))
       if imgui.Button(connectButtonText, actionButtonSize) then
-        connectButtonAction()
+        if not userWantsConnection and not messagesConfigLoaded then
+          showConfirm("Конфиг не выбран",
+            "Конфиг сообщений не выбран - сообщения из игрового чата пересылаться не будут. Подключиться?",
+            connectToTelegram)
+        else
+          connectButtonAction()
+        end
       end
 
       imgui.SetCursorPos(imgui.ImVec2((imgui.GetWindowWidth() - actionButtonSize.x) / 2, 190))
@@ -1675,117 +2411,263 @@ imgui.OnFrame(
     if imgui.BeginTabItem("Сообщения") then
       imgui.Spacing()
       imgui.Spacing()
-      imgui.PushItemWidth(300)
-      imgui.InputText("Поиск##messages", ui.searchBuffer, ffi.sizeof(ui.searchBuffer))
+
+      local currentConfigIndex = 0
+      for i, c in ipairs(availableConfigs) do
+        if c.id == cfg.settings.activeMessagesConfig then currentConfigIndex = i break end
+      end
+      local configItems = "(не выбрано)\0"
+      for _, c in ipairs(availableConfigs) do
+        configItems = configItems .. c.name .. "\0"
+      end
+      imgui.PushItemWidth(180)
+      local configIndex = ffi.new("int[1]", currentConfigIndex)
+      if imgui.ComboStr("##messagesConfig", configIndex, configItems, -1) then
+        local selected = availableConfigs[configIndex[0]]
+        local newId = configIndex[0] == 0 and "" or (selected and selected.id or "")
+        if newId ~= cfg.settings.activeMessagesConfig then
+          selectMessagesConfig(newId)
+        end
+      end
       imgui.PopItemWidth()
-      if imgui.IsItemActive() then
-        sampSetChatInputEnabled(false)
-      end
-
-      local resetW = imgui.CalcTextSize("Сброс").x + imgui.GetStyle().FramePadding.x * 2
-      imgui.SameLine(imgui.GetWindowWidth() - resetW - imgui.GetStyle().WindowPadding.x)
-      if imgui.Button("Сброс##messages") then
-        showConfirm("Сброс сообщений", "Вернуть настройки сообщений к исходным?", function()
-          cfg.messages.items = deepCopy(initialCfg.messages.items)
-          saveCFG(cfg, CONFIG_PATH)
-          rebuildPatterns()
-        end)
-      end
-
-      imgui.Spacing()
-
-      local sendMessages = ffi.new("bool[1]", cfg.messages.options.enabled)
-      if imgui.Checkbox("Отправлять сообщения", sendMessages) then
-        cfg.messages.options.enabled = sendMessages[0]
-        saveCFG(cfg, CONFIG_PATH)
-      end
-
       imgui.SameLine()
-      local sendAll = ffi.new("bool[1]", cfg.messages.options.sendAll)
-      if imgui.Checkbox("Отправлять все сообщения", sendAll) then
-        cfg.messages.options.sendAll = sendAll[0]
-        saveCFG(cfg, CONFIG_PATH)
+      if imgui.Button(faicons('ARROWS_ROTATE') .. "##refreshConfigs") then
+        refreshMessageConfigs()
+        loadMessagesConfig(cfg.settings.activeMessagesConfig)
+        rebuildPatterns()
+      end
+      if cfg.settings.activeMessagesConfig ~= "" then
+        imgui.SameLine()
+        if imgui.Button(faicons('PEN') .. "##renameConfig") then
+          openRenameForm()
+        end
+      end
+      imgui.SameLine()
+      if imgui.Button(faicons('PLUS') .. " Создать##createConfig") then
+        openConfigForm()
       end
 
-      local notifyW = imgui.GetFrameHeight() + imgui.GetStyle().ItemInnerSpacing.x + imgui.CalcTextSize("Уведомления").x
-      imgui.SameLine(imgui.GetWindowWidth() - notifyW - imgui.GetStyle().WindowPadding.x)
-      local sendAllNotify = ffi.new("bool[1]", cfg.messages.options.notifications)
-      if imgui.Checkbox("Уведомления##sendAll", sendAllNotify) then
-        cfg.messages.options.notifications = sendAllNotify[0]
-        saveCFG(cfg, CONFIG_PATH)
+      if messagesConfigLoaded and not messagesTemplateExists then
+        imgui.SameLine()
+        if imgui.Button(faicons('PLUS') .. " Шаблон##makeTemplate") then
+          showConfirm(
+            "Создание шаблона",
+            'Текущий конфиг "' .. cfg.settings.activeMessagesConfig .. '" будет сохранён как шаблон. Продолжить?',
+            makeMessagesTemplate
+          )
+        end
+      end
+
+      if cfg.settings.activeMessagesConfig ~= "" then
+        local id = cfg.settings.activeMessagesConfig
+        local style = imgui.GetStyle()
+        local delCfgW = imgui.CalcTextSize(faicons('TRASH_CAN') .. " Конфиг").x + style.FramePadding.x * 2
+        local delTplW = imgui.CalcTextSize(faicons('TRASH_CAN') .. " Шаблон").x + style.FramePadding.x * 2
+
+        local groupW = delCfgW
+        if messagesTemplateExists then
+          groupW = groupW + style.ItemSpacing.x + delTplW
+        end
+        imgui.SameLine(imgui.GetWindowWidth() - groupW - style.WindowPadding.x)
+
+        if imgui.Button(faicons('TRASH_CAN') .. " Конфиг##deleteConfig") then
+          showConfirm(
+            "Удаление конфига",
+            'Файл конфига "' .. id .. '.json" будет удалён безвозвратно. Продолжить?',
+            deleteMessagesConfig
+          )
+        end
+
+        if messagesTemplateExists then
+          imgui.SameLine()
+          if imgui.Button(faicons('TRASH_CAN') .. " Шаблон##deleteTemplate") then
+            showConfirm(
+              "Удаление шаблона",
+              'Шаблон "' .. id .. '.default.json" будет удалён безвозвратно. Продолжить?',
+              deleteMessagesTemplate
+            )
+          end
+        end
       end
 
       imgui.Spacing()
 
-      local messagesDisabled = not cfg.messages.options.enabled
-      if messagesDisabled then
-        imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
-      end
-
-      if (#cfg.messages.items > 0) and imgui.BeginChild("messagesList", imgui.ImVec2(-1, -1), true) then
-        local w = {
-          tag = 80,
-          desc = 332,
-          status = 54,
-          notify = 100,
-        }
-
-        imgui.Columns(4, "messagesCols", false)
-
-        imgui.Text("Тег"); imgui.SetColumnWidth(-1, w.tag)
-        imgui.NextColumn()
-        imgui.Text("Описание"); imgui.SetColumnWidth(-1, w.desc)
-        imgui.NextColumn()
-        imgui.Text("Статус"); imgui.SetColumnWidth(-1, w.status)
-        imgui.NextColumn()
-        imgui.Text("Уведомления"); imgui.SetColumnWidth(-1, w.notify)
-        imgui.NextColumn()
-
-        imgui.Columns(4)
-        for _, msg in ipairs(cfg.messages.items) do
-          local searchQuery = ffi.string(ui.searchBuffer)
-          if searchQuery == "" or (msg.tag or ""):find(searchQuery, 1, true) or msg.description:find(searchQuery, 1, true) then
-            imgui.Separator()
-            imgui.Text(msg.tag or ""); imgui.SetColumnWidth(-1, w.tag)
-            imgui.NextColumn()
-
-            imgui.Text(msg.description); imgui.SetColumnWidth(-1, w.desc)
-            if imgui.IsItemHovered() then
-              imgui.BeginTooltip()
-              imgui.Text(msg.description)
-              imgui.EndTooltip()
+      if not messagesConfigLoaded then
+        imgui.Separator()
+        imgui.SetCursorPosY(imgui.GetWindowHeight() / 2)
+        if messagesConfigBroken then
+          centeredText("Конфиг сообщений повреждён")
+          if messagesTemplateAvailable then
+            imgui.Spacing()
+            local restoreW = imgui.CalcTextSize("Восстановить").x + imgui.GetStyle().FramePadding.x * 2
+            imgui.SetCursorPosX((imgui.GetWindowSize().x - restoreW) * 0.5)
+            if imgui.Button("Восстановить##messages") then
+              showConfirm(
+                "Восстановление конфига",
+                "Конфиг сообщений будет перезаписан значениями по умолчанию. Продолжить?",
+                applyMessagesUpdate
+              )
             end
-            imgui.NextColumn()
+          end
+        else
+          centeredText("Выбери конфиг сообщений")
+        end
+      else
+        imgui.PushItemWidth(300)
+        imgui.InputText("Поиск##messages", ui.searchBuffer, ffi.sizeof(ui.searchBuffer))
+        imgui.PopItemWidth()
+        if imgui.IsItemActive() then
+          sampSetChatInputEnabled(false)
+        end
 
-            imgui.SetCursorPosX(imgui.GetCursorPosX() + (w.status - 25) / 2)
-            local enabled = ffi.new("bool[1]", msg.is_enabled)
-            if imgui.Checkbox("##status_"..msg.id, enabled) then
-              msg.is_enabled = enabled[0]
-              saveCFG(cfg, CONFIG_PATH)
-            end
-            imgui.SetColumnWidth(-1, w.status)
-            imgui.NextColumn()
-
-            imgui.SetCursorPosX(imgui.GetCursorPosX() + (w.notify - 25) / 2)
-            local notify = ffi.new("bool[1]", msg.notification)
-            if imgui.Checkbox("##notify_"..msg.id, notify) then
-              msg.notification = notify[0]
-              saveCFG(cfg, CONFIG_PATH)
-            end
-            imgui.SetColumnWidth(-1, w.notify)
-            imgui.NextColumn()
+        local addW = imgui.CalcTextSize(faicons('PLUS') .. " Добавить").x + imgui.GetStyle().FramePadding.x * 2
+        local resetW = imgui.CalcTextSize(faicons('ARROW_ROTATE_LEFT') .. " Сброс").x + imgui.GetStyle().FramePadding.x * 2
+        local groupW = addW
+        if messagesTemplateExists then
+          groupW = groupW + imgui.GetStyle().ItemSpacing.x + resetW
+        end
+        imgui.SameLine(imgui.GetWindowWidth() - groupW - imgui.GetStyle().WindowPadding.x)
+        if imgui.Button(faicons('PLUS') .. " Добавить##messages") then
+          openMessageForm(nil)
+        end
+        if messagesTemplateExists then
+          imgui.SameLine()
+          if imgui.Button(faicons('ARROW_ROTATE_LEFT') .. " Сброс##messages") then
+            showConfirm(
+              "Сброс сообщений",
+              "Вернуть настройки сообщений к исходным? Все добавленные вручную сообщения будут удалены.",
+              applyMessagesUpdate
+            )
           end
         end
 
-        imgui.EndChild()
-      else
-        imgui.Separator()
-        imgui.SetCursorPos(imgui.ImVec2(240, imgui.GetWindowHeight() / 2))
-        imgui.Text("Сообщений нет")
-      end
+        imgui.Spacing()
 
-      if messagesDisabled then
-        imgui.PopStyleVar(1)
+        local sendMessages = ffi.new("bool[1]", cfg.messages.options.enabled)
+        if imgui.Checkbox("Отправлять сообщения", sendMessages) then
+          cfg.messages.options.enabled = sendMessages[0]
+          saveMessagesConfig()
+        end
+
+        imgui.SameLine()
+        local sendAll = ffi.new("bool[1]", cfg.messages.options.sendAll)
+        if imgui.Checkbox("Отправлять все сообщения", sendAll) then
+          cfg.messages.options.sendAll = sendAll[0]
+          saveMessagesConfig()
+        end
+
+        local notifyW = imgui.GetFrameHeight() + imgui.GetStyle().ItemInnerSpacing.x + imgui.CalcTextSize("Уведомления").x
+        imgui.SameLine(imgui.GetWindowWidth() - notifyW - imgui.GetStyle().WindowPadding.x)
+        local sendAllNotify = ffi.new("bool[1]", cfg.messages.options.notifications)
+        if imgui.Checkbox("Уведомления##sendAll", sendAllNotify) then
+          cfg.messages.options.notifications = sendAllNotify[0]
+          saveMessagesConfig()
+        end
+
+        imgui.Spacing()
+
+        if messagesUpdateAvailable then
+          imgui.TextColored(imgui.ImVec4(1, 0.78, 0, 1), "Доступно обновление конфига сообщений (" .. messagesUpdateVersion .. ")")
+          imgui.SameLine()
+          if imgui.Button("Обновить##messages") then
+            showConfirm(
+              "Обновление конфига",
+              "Все твои настройки сообщений и добавленные вручную сообщения будут сброшены к значениям по умолчанию. Продолжить?",
+              applyMessagesUpdate
+            )
+          end
+          imgui.Spacing()
+        end
+
+        local messagesDisabled = not cfg.messages.options.enabled
+        if messagesDisabled then
+          imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
+        end
+
+        if #cfg.messages.items > 0 then
+          imgui.BeginChild("messagesList", imgui.ImVec2(-1, -1), true)
+
+          local w = {
+            tag = 80,
+            desc = 306,
+            status = 50,
+            notify = 50,
+            actions = 70,
+          }
+
+          imgui.Columns(5, "messagesCols", false)
+
+          imgui.Text("Тег"); imgui.SetColumnWidth(-1, w.tag)
+          imgui.NextColumn()
+          imgui.Text("Описание"); imgui.SetColumnWidth(-1, w.desc)
+          imgui.NextColumn()
+          imgui.Text("Статус"); imgui.SetColumnWidth(-1, w.status)
+          imgui.NextColumn()
+          imgui.Text("Увед."); imgui.SetColumnWidth(-1, w.notify)
+          imgui.NextColumn()
+          imgui.Text("Действия"); imgui.SetColumnWidth(-1, w.actions)
+          imgui.NextColumn()
+
+          for _, msg in ipairs(cfg.messages.items) do
+            local searchQuery = ffi.string(ui.searchBuffer)
+            if searchQuery == "" or (msg.tag or ""):find(searchQuery, 1, true) or msg.description:find(searchQuery, 1, true) then
+              imgui.Separator()
+              imgui.TextUnformatted(msg.tag or ""); imgui.SetColumnWidth(-1, w.tag)
+              imgui.NextColumn()
+
+              imgui.TextUnformatted(msg.description); imgui.SetColumnWidth(-1, w.desc)
+              if imgui.IsItemHovered() then
+                imgui.BeginTooltip()
+                imgui.TextUnformatted(msg.description)
+                imgui.EndTooltip()
+              end
+              imgui.NextColumn()
+
+              imgui.SetCursorPosX(imgui.GetCursorPosX() + (w.status - 25) / 2)
+              local enabled = ffi.new("bool[1]", msg.is_enabled)
+              if imgui.Checkbox("##status_"..msg.id, enabled) then
+                msg.is_enabled = enabled[0]
+                saveMessagesConfig()
+              end
+              imgui.SetColumnWidth(-1, w.status)
+              imgui.NextColumn()
+
+              imgui.SetCursorPosX(imgui.GetCursorPosX() + (w.notify - 25) / 2)
+              local notify = ffi.new("bool[1]", msg.notification)
+              if imgui.Checkbox("##notify_"..msg.id, notify) then
+                msg.notification = notify[0]
+                saveMessagesConfig()
+              end
+              imgui.SetColumnWidth(-1, w.notify)
+              imgui.NextColumn()
+
+              imgui.SetCursorPosX(imgui.GetCursorPosX() + 10)
+              if imgui.Button(faicons('PEN_TO_SQUARE') .. "##edit_" .. msg.id) then
+                openMessageForm(msg)
+              end
+              imgui.SameLine(nil, 10)
+              if imgui.Button(faicons('TRASH_CAN') .. "##delete_" .. msg.id) then
+                showConfirm(
+                  "Удаление сообщения",
+                  'Удалить сообщение "' .. utf8Truncate(msg.description, 60) .. '"?',
+                  function() deleteMessage(msg.id) end
+                )
+              end
+              imgui.SetColumnWidth(-1, w.actions)
+              imgui.NextColumn()
+            end
+          end
+
+          imgui.EndChild()
+        else
+          imgui.Separator()
+          imgui.SetCursorPos(imgui.ImVec2(240, imgui.GetWindowHeight() / 2))
+          imgui.Text("Сообщений нет")
+        end
+
+        if messagesDisabled then
+          imgui.PopStyleVar(1)
+        end
       end
 
       imgui.EndTabItem()
@@ -1801,13 +2683,14 @@ imgui.OnFrame(
         sampSetChatInputEnabled(false)
       end
 
-      local resetW = imgui.CalcTextSize("Сброс").x + imgui.GetStyle().FramePadding.x * 2
+      local resetW = imgui.CalcTextSize(faicons('ARROW_ROTATE_LEFT') .. " Сброс").x + imgui.GetStyle().FramePadding.x * 2
       imgui.SameLine(imgui.GetWindowWidth() - resetW - imgui.GetStyle().WindowPadding.x)
-      if imgui.Button("Сброс##events") then
-        showConfirm("Сброс событий", "Вернуть настройки событий к исходным?", function()
-          cfg.events.items = deepCopy(initialCfg.events.items)
-          saveCFG(cfg, CONFIG_PATH)
-        end)
+      if imgui.Button(faicons('ARROW_ROTATE_LEFT') .. " Сброс##events") then
+        showConfirm(
+          "Сброс событий",
+          "Вернуть настройки событий к исходным?",
+          resetEventsConfig
+        )
       end
 
       imgui.Spacing()
@@ -1815,14 +2698,14 @@ imgui.OnFrame(
       local sendEvents = ffi.new("bool[1]", cfg.events.options.enabled)
       if imgui.Checkbox("Отправлять события", sendEvents) then
         cfg.events.options.enabled = sendEvents[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
 
       imgui.SameLine()
       local sendAll = ffi.new("bool[1]", cfg.events.options.sendAll)
       if imgui.Checkbox("Отправлять все события", sendAll) then
         cfg.events.options.sendAll = sendAll[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
 
       local notifyW = imgui.GetFrameHeight() + imgui.GetStyle().ItemInnerSpacing.x + imgui.CalcTextSize("Уведомления").x
@@ -1830,7 +2713,7 @@ imgui.OnFrame(
       local sendAllNotify = ffi.new("bool[1]", cfg.events.options.notifications)
       if imgui.Checkbox("Уведомления##sendAllEvents", sendAllNotify) then
         cfg.events.options.notifications = sendAllNotify[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
 
       imgui.Spacing()
@@ -1840,12 +2723,14 @@ imgui.OnFrame(
         imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
       end
 
-      if next(cfg.events.items) and imgui.BeginChild("eventsList", imgui.ImVec2(-1, -1), true) then
+      if next(cfg.events.items) then
+        imgui.BeginChild("eventsList", imgui.ImVec2(-1, -1), true)
+
         local w = {
-          tag = 80,
-          desc = 332,
+          tag = 90,
+          desc = 368,
           status = 54,
-          notify = 100,
+          notify = 54,
         }
 
         imgui.Columns(4, "eventsCols", false)
@@ -1856,21 +2741,20 @@ imgui.OnFrame(
         imgui.NextColumn()
         imgui.Text("Статус"); imgui.SetColumnWidth(-1, w.status)
         imgui.NextColumn()
-        imgui.Text("Уведомления"); imgui.SetColumnWidth(-1, w.notify)
+        imgui.Text("Увед."); imgui.SetColumnWidth(-1, w.notify)
         imgui.NextColumn()
 
-        imgui.Columns(4)
         for key, event in pairs(cfg.events.items) do
           local searchQuery = ffi.string(ui.eventsSearchBuffer)
           if searchQuery == "" or event.tag:find(searchQuery, 1, true) or event.description:find(searchQuery, 1, true) then
             imgui.Separator()
-            imgui.Text(event.tag); imgui.SetColumnWidth(-1, w.tag)
+            imgui.TextUnformatted(event.tag); imgui.SetColumnWidth(-1, w.tag)
             imgui.NextColumn()
 
-            imgui.Text(event.description); imgui.SetColumnWidth(-1, w.desc)
+            imgui.TextUnformatted(event.description); imgui.SetColumnWidth(-1, w.desc)
             if imgui.IsItemHovered() then
               imgui.BeginTooltip()
-              imgui.Text(event.description)
+              imgui.TextUnformatted(event.description)
               imgui.EndTooltip()
             end
             imgui.NextColumn()
@@ -1879,7 +2763,7 @@ imgui.OnFrame(
             local enabled = ffi.new("bool[1]", event.is_enabled)
             if imgui.Checkbox("##event_status_"..key, enabled) then
               event.is_enabled = enabled[0]
-              saveCFG(cfg, CONFIG_PATH)
+              saveBaseConfig()
             end
             imgui.SetColumnWidth(-1, w.status)
             imgui.NextColumn()
@@ -1888,7 +2772,7 @@ imgui.OnFrame(
             local notify = ffi.new("bool[1]", event.notification)
             if imgui.Checkbox("##event_notify_"..key, notify) then
               event.notification = notify[0]
-              saveCFG(cfg, CONFIG_PATH)
+              saveBaseConfig()
             end
             imgui.SetColumnWidth(-1, w.notify)
             imgui.NextColumn()
@@ -1916,14 +2800,14 @@ imgui.OnFrame(
       local sendDialogs = ffi.new("bool[1]", cfg.dialogs.options.enabled)
       if imgui.Checkbox("Отправлять диалоги", sendDialogs) then
         cfg.dialogs.options.enabled = sendDialogs[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
 
       imgui.SameLine()
       local sendAll = ffi.new("bool[1]", cfg.dialogs.options.sendAll)
       if imgui.Checkbox("Отправлять все диалоги", sendAll) then
         cfg.dialogs.options.sendAll = sendAll[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
 
       local notifyW = imgui.GetFrameHeight() + imgui.GetStyle().ItemInnerSpacing.x + imgui.CalcTextSize("Уведомления").x
@@ -1931,7 +2815,7 @@ imgui.OnFrame(
       local sendAllNotify = ffi.new("bool[1]", cfg.dialogs.options.notifications)
       if imgui.Checkbox("Уведомления##sendAll", sendAllNotify) then
         cfg.dialogs.options.notifications = sendAllNotify[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
 
       imgui.Spacing()
@@ -1941,12 +2825,14 @@ imgui.OnFrame(
         imgui.PushStyleVarFloat(imgui.StyleVar.Alpha, imgui.GetStyle().Alpha * 0.5)
       end
 
-      if (#cfg.dialogs.items > 0) and imgui.BeginChild("dialogsList", imgui.ImVec2(-1, -1), true) then
+      if #cfg.dialogs.items > 0 then
+        imgui.BeginChild("dialogsList", imgui.ImVec2(-1, -1), true)
+
         local w = {
-          style = 50,
-          desc = 370,
-          status = 52,
-          notify = 100,
+          style = 52,
+          desc = 412,
+          status = 54,
+          notify = 54,
         }
 
         imgui.Columns(4, "dialogsCols", false)
@@ -1957,23 +2843,22 @@ imgui.OnFrame(
         imgui.NextColumn()
         imgui.Text("Статус"); imgui.SetColumnWidth(-1, w.status)
         imgui.NextColumn()
-        imgui.Text("Уведомления"); imgui.SetColumnWidth(-1, w.notify)
+        imgui.Text("Увед."); imgui.SetColumnWidth(-1, w.notify)
         imgui.NextColumn()
 
-        imgui.Columns(4)
         for _, dialog in ipairs(cfg.dialogs.items) do
           imgui.Separator()
           imgui.Text(tostring(dialog.style)); imgui.SetColumnWidth(-1, w.style)
           imgui.NextColumn()
 
-          imgui.Text(dialog.description); imgui.SetColumnWidth(-1, w.desc)
+          imgui.TextUnformatted(dialog.description); imgui.SetColumnWidth(-1, w.desc)
           imgui.NextColumn()
 
           imgui.SetCursorPosX(imgui.GetCursorPosX() + (w.status - 25) / 2)
           local enabled = ffi.new("bool[1]", dialog.is_enabled)
           if imgui.Checkbox("##dialog_status_"..dialog.style, enabled) then
             dialog.is_enabled = enabled[0]
-            saveCFG(cfg, CONFIG_PATH)
+            saveBaseConfig()
           end
           imgui.SetColumnWidth(-1, w.status)
           imgui.NextColumn()
@@ -1982,7 +2867,7 @@ imgui.OnFrame(
           local notify = ffi.new("bool[1]", dialog.notification)
           if imgui.Checkbox("##dialog_notify_"..dialog.style, notify) then
             dialog.notification = notify[0]
-            saveCFG(cfg, CONFIG_PATH)
+            saveBaseConfig()
           end
           imgui.SetColumnWidth(-1, w.notify)
           imgui.NextColumn()
@@ -2005,7 +2890,7 @@ imgui.OnFrame(
       local autoConnect = ffi.new("bool[1]", cfg.settings.autoConnect)
       if imgui.Checkbox("Автоподключение при входе в игру", autoConnect) then
         cfg.settings.autoConnect = autoConnect[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
 
       imgui.Spacing()
@@ -2013,7 +2898,7 @@ imgui.OnFrame(
       local systemMessages = ffi.new("bool[1]", cfg.settings.systemMessages)
       if imgui.Checkbox("Системные сообщения в чате", systemMessages) then
         cfg.settings.systemMessages = systemMessages[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
 
       imgui.Spacing()
@@ -2021,7 +2906,30 @@ imgui.OnFrame(
       local autoReconnect = ffi.new("bool[1]", cfg.settings.autoReconnect)
       if imgui.Checkbox("Переподключение при потере соединения", autoReconnect) then
         cfg.settings.autoReconnect = autoReconnect[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
+      end
+
+      if cfg.settings.autoReconnect then
+        imgui.Spacing()
+        imgui.Indent(26)
+
+        imgui.PushItemWidth(120)
+        if imgui.InputInt("Количество попыток##maxReconnectAttempts", ui.maxReconnectAttempts, 1, 1) then
+          ui.maxReconnectAttempts[0] = clampReconnectAttempts(ui.maxReconnectAttempts[0])
+          cfg.settings.maxReconnectAttempts = ui.maxReconnectAttempts[0]
+          saveBaseConfig()
+        end
+        imgui.PopItemWidth()
+
+        if imgui.IsItemHovered() then
+          imgui.BeginTooltip()
+          imgui.PushTextWrapPos(300)
+          imgui.TextWrapped("Сколько раз пытаться переподключиться к боту при потере соединения (от " .. MIN_RECONNECT_ATTEMPTS .. " до " .. MAX_RECONNECT_ATTEMPTS .. "). Задержка между попытками - " .. RECONNECT_DELAY .. " с.")
+          imgui.PopTextWrapPos()
+          imgui.EndTooltip()
+        end
+
+        imgui.Unindent(26)
       end
 
       imgui.Spacing()
@@ -2029,7 +2937,7 @@ imgui.OnFrame(
       local disconnectAction = ffi.new("bool[1]", cfg.settings.disconnectAction)
       if imgui.Checkbox("Действие при потере соединения", disconnectAction) then
         cfg.settings.disconnectAction = disconnectAction[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
       if imgui.IsItemHovered() then
         imgui.BeginTooltip()
@@ -2044,7 +2952,7 @@ imgui.OnFrame(
       imgui.PushItemWidth(160)
       if imgui.ComboStr("##disconnectActionType", disconnectActionType, "Выйти в АФК\0Выйти из игры (/q)\0", -1) then
         cfg.settings.disconnectActionType = disconnectActionType[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
       imgui.PopItemWidth()
 
@@ -2053,7 +2961,7 @@ imgui.OnFrame(
       local soundNotification = ffi.new("bool[1]", cfg.settings.soundNotification)
       if imgui.Checkbox("Звуковое уведомление в игре", soundNotification) then
         cfg.settings.soundNotification = soundNotification[0]
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
       if imgui.IsItemHovered() then
         imgui.BeginTooltip()
@@ -2069,7 +2977,7 @@ imgui.OnFrame(
         cfg.settings.soundVolume = soundVolume[0]
       end
       if imgui.IsItemDeactivatedAfterEdit() then
-        saveCFG(cfg, CONFIG_PATH)
+        saveBaseConfig()
       end
       imgui.PopItemWidth()
 
@@ -2085,6 +2993,9 @@ imgui.OnFrame(
       if imgui.SliderInt("Время ожидания ответа (сек)##forwardResponseTime", forwardResponseTime, 1, 5) then
         cfg.settings.forwardResponseTime = forwardResponseTime[0]
       end
+      if imgui.IsItemDeactivatedAfterEdit() then
+        saveBaseConfig()
+      end
       if imgui.IsItemHovered() then
         imgui.BeginTooltip()
         imgui.PushTextWrapPos(300)
@@ -2092,17 +3003,18 @@ imgui.OnFrame(
         imgui.PopTextWrapPos()
         imgui.EndTooltip()
       end
-      if imgui.IsItemDeactivatedAfterEdit() then
-        saveCFG(cfg, CONFIG_PATH)
-      end
       imgui.PopItemWidth()
 
       imgui.EndTabItem()
     end
 
-    imgui.EndTabBar()
+    if tabBarOpen then
+      imgui.EndTabBar()
+    end
 
     renderConfirmPopup()
+    renderMessageFormPopup()
+    renderConfigFormPopup()
 
     imgui.PopFont()
 
@@ -2115,7 +3027,7 @@ local function initSession()
   rebuildPatterns()
 
   if cfg.settings.connectionKey and cfg.settings.connectionKey ~= "" then
-    ffi.copy(ui.connectionKey, cfg.settings.connectionKey)
+    setBuffer(ui.connectionKey, ffi.sizeof(ui.connectionKey), cfg.settings.connectionKey)
   end
 
   if cfg.settings.autoConnect and MyNickName and MyNickName ~= "" then
@@ -2133,9 +3045,12 @@ function ev.onSendSpawn()
 end
 
 function ev.onServerMessage(c, text)
+  local decoded = u8(text)
+  table.insert(chatHistory, 1, { color = c, text = decoded })
+  if #chatHistory > CHAT_HISTORY_MAX then table.remove(chatHistory) end
+
   if ws.GetConnectionStatus() ~= "OPEN" then return end
 
-  local decoded = u8(text)
   local message = handleChatMessage(c, decoded)
 
   if message then
@@ -2208,6 +3123,30 @@ function ev.onSetPlayerWantedLevel(wantedLevel)
   fireEvent("wanted_level", "Уровень розыска: " .. wantedLevel .. " звёзд")
 end
 
+function ev.onSetPlayerSkin(playerId, skinId)
+  if playerId ~= MyID then return end
+  fireEvent("skin", string.format("Новый скин: %d", skinId))
+end
+
+function ev.onApplyPlayerAnimation(playerId, animLib, animName, frameDelta, loop, lockX, lockY, freeze, time)
+  if playerId ~= MyID then return end
+  fireEvent("animation", string.format("Анимация: %s (%s)", animName or "?", animLib or "?"))
+end
+
+function ev.onSetInterior(interior)
+  fireEvent("interior", "Смена интерьера: " .. interior)
+end
+
+function ev.onSetPlayerSpecialAction(actionId)
+  fireEvent("special_action",  (SPECIAL_ACTIONS[actionId] or tostring(actionId)))
+end
+
+function ev.onDisplayGameText(style, time, text)
+  local clean = u8(text):gsub("~[nN]~", "\n"):gsub("~.-~", ""):gsub("^%s+", ""):gsub("%s+$", "")
+  if clean == "" then return end
+  fireEvent("game_text", clean)
+end
+
 function ev.onGivePlayerMoney(money)
   if MyMoney == money then return end
   local diff = money - MyMoney
@@ -2252,16 +3191,13 @@ function ev.onSendDialogResponse(dialogId, button, listitem, input)
 end
 
 ------------------------------------ Main  ------------------------------------
-local function loadConfig()
-  if not doesDirectoryExist('moonloader/config') then createDirectory("moonloader/config") end
-  if not doesDirectoryExist('moonloader/config/sampmanagerx') then createDirectory("moonloader/config/sampmanagerx") end
-
-  if not doesFileExist(CONFIG_PATH) then
-    saveCFG(cfg, CONFIG_PATH)
+local function loadBaseConfig()
+  if not doesFileExist(BASE_CONFIG_PATH) then
+    saveBaseConfig()
     return
   end
 
-  local file = io.open(CONFIG_PATH, 'r')
+  local file = io.open(BASE_CONFIG_PATH, 'r')
   if not file then return end
   local rawData = file:read('*a')
   file:close()
@@ -2277,9 +3213,23 @@ local function loadConfig()
   else
     if fileCFG and fileCFG.settings then
       cfg.settings.connectionKey = fileCFG.settings.connectionKey or cfg.settings.connectionKey
+      cfg.settings.activeMessagesConfig = fileCFG.settings.activeMessagesConfig or cfg.settings.activeMessagesConfig
     end
-    saveCFG(cfg, CONFIG_PATH)
+    saveBaseConfig()
   end
+end
+
+local function loadConfig()
+  if not doesDirectoryExist('moonloader/config') then createDirectory("moonloader/config") end
+  if not doesDirectoryExist(CONFIG_DIR) then createDirectory(CONFIG_DIR) end
+  if not doesDirectoryExist(MESSAGES_DIR) then createDirectory(MESSAGES_DIR) end
+
+  loadBaseConfig()
+  cfg.settings.activeMessagesConfig = cfg.settings.activeMessagesConfig or ""
+  cfg.settings.maxReconnectAttempts = clampReconnectAttempts(cfg.settings.maxReconnectAttempts)
+  ui.maxReconnectAttempts[0] = cfg.settings.maxReconnectAttempts
+  refreshMessageConfigs()
+  loadMessagesConfig(cfg.settings.activeMessagesConfig)
 end
 
 local function registerCommands()
@@ -2301,6 +3251,14 @@ function main()
 	if not isSampfuncsLoaded() or not isSampLoaded() then return end
 	while not isSampAvailable() do wait(100) end
 
+  repeat wait(0) until sampGetCurrentServerName() ~= "SA-MP"
+
+  repeat
+    wait(0)
+    local found, id = sampGetPlayerIdByCharHandle(PLAYER_PED)
+    local myNick = found and sampGetPlayerNickname(id) or nil
+  until myNick ~= nil and myNick ~= ""
+
   loadConfig()
   initSession()
   registerCommands()
@@ -2315,8 +3273,9 @@ function main()
   local wsTick = makeInterval(WS_POLL_INTERVAL)
   local coordsTick = makeInterval(COORDS_INTERVAL)
   local healthTick = makeInterval(HEALTH_INTERVAL)
+  local armourTick = makeInterval(ARMOUR_INTERVAL)
 
-  local prevCoordsText, prevHealth = nil, nil
+  local prevCoordsText, prevHealth, prevArmour = nil, nil, nil
 
 	while true do
 		wait(0)
@@ -2330,6 +3289,10 @@ function main()
 
     if healthTick(now) and ws.GetConnectionStatus() == "OPEN" then
       prevHealth = updatePlayerHealth(prevHealth)
+    end
+
+    if armourTick(now) and ws.GetConnectionStatus() == "OPEN" then
+      prevArmour = updatePlayerArmour(prevArmour)
     end
 	end
 end
